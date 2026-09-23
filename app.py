@@ -156,7 +156,7 @@ Lütfen form üzerindeki el yazısı ile yazılmış bilgileri bul:
 Yanıtını sadece aşağıdaki formatta, düz bir JSON olarak ver. Başka hiçbir açıklama ekleme:
 {"isim": "Ad Soyad", "tc": "12345678901"}"""
                     
-                  max_deneme = 3
+                    max_deneme = 3
                     sayfa_isim = "Bilinmeyen_Kisi"
                     sayfa_tc = "BilinmeyenTC"
                     
@@ -175,3 +175,77 @@ Yanıtını sadece aşağıdaki formatta, düz bir JSON olarak ver. Başka hiçb
                                 time.sleep(10)
                             else:
                                 break
+                                
+                    islem_gorseli.close()
+                    time.sleep(3)
+                    
+                    if sayfa_isim != "Bilinmeyen_Kisi" and sayfa_isim != "":
+                        blok_kisi = sayfa_isim
+                        if sayfa_tc != "BilinmeyenTC" and sayfa_tc != "":
+                            blok_tc = sayfa_tc
+                        break 
+                
+                if blok_kisi != "Bilinmeyen_Kisi":
+                    if aktif_kisi != "Bilinmeyen_Kisi":
+                        isim_benziyor_mu = benzerlik_orani(aktif_kisi, blok_kisi) > 0.70
+                        tc_benziyor_mu = benzerlik_orani(aktif_tc, blok_tc) > 0.80
+                        
+                        if isim_benziyor_mu or tc_benziyor_mu:
+                            blok_kisi = aktif_kisi
+                            blok_tc = aktif_tc
+                        else:
+                            aktif_kisi = blok_kisi
+                            aktif_tc = blok_tc
+                    else:
+                        aktif_kisi = blok_kisi
+                        aktif_tc = blok_tc
+
+                klasor_adi = f"{blok_kisi}_{blok_tc}"
+                hedef_klasor = os.path.join(ayrilmis_klasor_yolu, klasor_adi)
+                if not os.path.exists(hedef_klasor):
+                    os.makedirs(hedef_klasor)
+
+                for idx, sayfa_yolu in enumerate(blok_sayfalari):
+                    islenen_sayfa += 1
+                    status_text.text(f"Blok {blok_no+1} dosyalanıyor... Toplam Sayfa: {islenen_sayfa}/{toplam_sayfa}")
+                    
+                    if idx < sinav_sayfa:
+                        dosya_adi = f"Sinav_{idx + 1}.tiff"
+                    elif idx < (sinav_sayfa + talimat_sayfa):
+                        dosya_adi = f"Talimat_{idx - sinav_sayfa + 1}.tiff"
+                    else:
+                        dosya_adi = f"Ekstra_Belge_{idx + 1}.tiff"
+
+                    hedef_yol = os.path.join(hedef_klasor, dosya_adi)
+                    
+                    sayac = 1
+                    orijinal_isim = dosya_adi.replace(".tiff", "")
+                    while os.path.exists(hedef_yol):
+                        dosya_adi = f"{orijinal_isim}_{sayac}.tiff"
+                        hedef_yol = os.path.join(hedef_klasor, dosya_adi)
+                        sayac += 1
+                        
+                    shutil.move(sayfa_yolu, hedef_yol)
+                    basarili_sayisi += 1
+                    progress_bar.progress(islenen_sayfa / toplam_sayfa)
+
+            status_text.text("Klasörler ZIP formatında sıkıştırılıyor...")
+            create_zip(ayrilmis_klasor_yolu, zip_yolu)
+            
+            # ZIP DOSYASINI KALICI HAFIZAYA (SESSION STATE) YÜKLE
+            with open(zip_yolu, "rb") as f:
+                st.session_state.zip_data = f.read()
+            st.session_state.islem_mesaji = f"{basarili_sayisi} sayfa isme ve TC'ye göre arşivlendi."
+            
+            status_text.text("İşlem tamamlandı!")
+
+# HAFIZADA DOSYA VARSA İNDİRME BUTONUNU SABİT OLARAK GÖSTER
+if st.session_state.zip_data is not None:
+    st.success(st.session_state.islem_mesaji)
+    st.download_button(
+        label="📦 Hazırlanan Klasörleri İndir (ZIP)",
+        data=st.session_state.zip_data,
+        file_name="ISG_Ayrilmis_Dosyalar.zip",
+        mime="application/zip",
+        type="primary"
+    )
