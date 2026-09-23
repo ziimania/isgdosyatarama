@@ -103,16 +103,16 @@ okunan_isim = "Bilinmeyen_Kisi"
 okunan_tc = "BilinmeyenTC"
 belge_turu = "Hata"
                 
-                max_deneme = 3
-                for deneme in range(max_deneme):
-                    try:
-                        response = model.generate_content([prompt, islem_gorseli])
-                        response_text = response.text.replace("```json", "").replace("```", "").strip()
-                        veri = json.loads(response_text)
-                        
-                        okunan_isim = dosya_adi_duzenle(veri.get("isim", "Bilinmeyen_Kisi"))
-                        okunan_tc = dosya_adi_duzenle(str(veri.get("tc", "BilinmeyenTC")))
-                        belge_turu = veri.get("tur", "Bilinmeyen_Tur").lower()
+max_deneme = 3
+for deneme in range(max_deneme):
+try:
+response = model.generate_content([prompt, islem_gorseli])
+response_text = response.text.replace("```json", "").replace("```", "").strip()
+veri = json.loads(response_text)
+
+okunan_isim = dosya_adi_duzenle(veri.get("isim", "Bilinmeyen_Kisi"))
+okunan_tc = dosya_adi_duzenle(str(veri.get("tc", "BilinmeyenTC")))
+belge_turu = veri.get("tur", "Bilinmeyen_Tur").lower()
                         break
                     except Exception as e:
                         if "429" in str(e) or "quota" in str(e).lower():
