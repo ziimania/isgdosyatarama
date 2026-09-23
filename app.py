@@ -82,26 +82,23 @@ if st.button("Ayrıştırmayı Başlat", type="primary"):
 
             for i, sayfa_yolu in enumerate(sayfa_yollari):
                 status_text.text(f"Sayfa {i+1} / {toplam_sayfa} analiz ediliyor...")
-                
-                with Image.open(sayfa_yolu) as img:
-                    islem_gorseli = img.copy()
-                    
-                islem_gorseli = islem_gorseli.convert('L')
-                islem_gorseli.thumbnail((2000, 2000))
-                
-                prompt = f"""
-                Bu görsel bir İş Sağlığı ve Güvenliği (İSG) belgesidir. 
-                {f"KULLANICI KILAVUZU: {kullanici_ipucu}" if kullanici_ipucu else ""}
-                
-                Görseldeki metni analiz et ve şu bilgileri çıkar:
-                1. Kişinin Adı ve Soyadı (Özellikle tükenmez kalemle yazılmış el yazısına çok dikkat et. Okunamıyorsa "Bilinmeyen Kisi" yaz).
-                2. 11 Haneli TC Kimlik Numarası (El yazısı rakamları dikkatlice oku. Yoksa "BilinmeyenTC" yaz).
-                3. Belge Türü ("Sinav" veya "Talimat" olarak belirle).
-                
-                Yanıtını sadece aşağıdaki formatta, düz bir JSON olarak ver. Başka hiçbir açıklama ekleme:
-                {{"isim": "Ad Soyad", "tc": "12345678901", "tur": "Sinav veya Talimat"}}
-                """
-                
+             with Image.open(sayfa_yolu) as img:
+    islem_gorseli = img.convert('RGB') 
+    # Siyah-beyaz ve boyut küçültme iptal edildi. 
+    # Mavi tükenmez kalem orijinal netliğinde yapay zekaya gidecek.
+         
+prompt = f"""
+Bu görsel bir İş Sağlığı ve Güvenliği (İSG) belgesidir. 
+{f"KULLANICI KILAVUZU: {kullanici_ipucu}" if kullanici_ipucu else ""}
+
+Lütfen form üzerindeki kutucuklara el yazısı ile yazılmış bilgileri bul:
+1. "ADI SOYADI:" başlığının yanındaki el yazısı ismi (Örn: Naime Kaya). Okunmuyorsa "Bilinmeyen Kisi" yaz.
+2. "T.C. KİMLİK NO:" başlığının yanındaki 11 haneli el yazısı rakamı. Okunmuyorsa "BilinmeyenTC" yaz.
+3. Belge Türünü ("Sinav" veya "Talimat") olarak belirle.
+
+Yanıtını sadece aşağıdaki formatta, düz bir JSON olarak ver. Başka hiçbir açıklama ekleme:
+{{"isim": "Ad Soyad", "tc": "12345678901", "tur": "Sinav veya Talimat"}}
+"""
                 okunan_isim = "Bilinmeyen_Kisi"
                 okunan_tc = "BilinmeyenTC"
                 belge_turu = "Hata"
