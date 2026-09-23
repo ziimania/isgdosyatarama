@@ -34,9 +34,8 @@ if "zip_data" not in st.session_state:
 if "islem_mesaji" not in st.session_state:
     st.session_state.islem_mesaji = ""
 
-st.title("📄 İSG Belge Ayrıştırıcı (Turbo & 300 DPI Kalite)")
+st.title("📄 İSG Belge Ayrıştırıcı (Net & Hızlı Blok Mimarisi)")
 
-# YENİ: Tarayıcının şifreyi hatırlaması için autocomplete eklendi
 api_key = st.text_input("Gemini API Anahtarınızı Girin:", type="password", autocomplete="current-password")
 
 st.markdown("### ⚙️ Belge Dizilimi (Blok Ayarları)")
@@ -56,7 +55,7 @@ if st.button("Ayrıştırmayı Başlat", type="primary"):
     elif not uploaded_file:
         st.error("Lütfen işlenecek PDF dosyasını yükleyin!")
     elif blok_boyutu == 0:
-        st.error("Toplam sayfa sayısı 0 olamaz. Lütfen Sınav veya Talimat sayfası girin.")
+        st.error("Toplam sayfa sayısı 0 olamaz.")
     else:
         st.session_state.zip_data = None
         st.session_state.islem_mesaji = ""
@@ -71,7 +70,7 @@ if st.button("Ayrıştırmayı Başlat", type="primary"):
                 if 'generateContent' in m.supported_generation_methods:
                     aktif_modeller.append(m.name)
             
-            oncelikli_modeller = ['gemini-3.8-flash', 'gemini-3.5-flash', 'gemini-2.5-flash']
+            oncelikli_modeller = ['gemini-3.8-flash', 'gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-1.5-flash']
             
             for oncelik in oncelikli_modeller:
                 for ad in aktif_modeller:
@@ -110,7 +109,7 @@ if st.button("Ayrıştırmayı Başlat", type="primary"):
             with open(pdf_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
 
-            st.info("PDF dosyası okunuyor, klasörleme için Yüksek Kalitede (300 DPI) diske kaydediliyor...")
+            st.info("PDF okunuyor, 300 DPI kalitesinde kaydediliyor...")
             try:
                 sayfa_yollari = convert_from_path(
                     pdf_path, 
@@ -120,7 +119,7 @@ if st.button("Ayrıştırmayı Başlat", type="primary"):
                     paths_only=True
                 )
             except Exception as e:
-                st.error("PDF parçalanırken hata oluştu! Hata: " + str(e))
+                st.error("PDF parçalanamadı: " + str(e))
                 st.stop()
                 
             toplam_sayfa = len(sayfa_yollari)
@@ -138,18 +137,15 @@ if st.button("Ayrıştırmayı Başlat", type="primary"):
                 blok_kisi = "Bilinmeyen_Kisi"
                 blok_tc = "BilinmeyenTC"
                 
-                if len(blok_sayfalari) > 1:
-                    arama_sirasi = [0, len(blok_sayfalari) - 1] + list(range(1, len(blok_sayfalari) - 1))
-                else:
-                    arama_sirasi = [0]
-
-                for idx in arama_sirasi:
+                # SADECE İLK 2 SAYFAYA BAKAR (1. sayfa okunamazsa 2. sayfaya geçer, hız kesmez)
+                aranacak_sayfa_sayisi = min(2, len(blok_sayfalari))
+                
+                for idx in range(aranacak_sayfa_sayisi):
                     sayfa_yolu = blok_sayfalari[idx]
-                    status_text.text(f"Blok {blok_no+1} / {len(bloklar)} taranıyor (Akıllı Arama: Sayfa {idx+1})...")
+                    status_text.text(f"Blok {blok_no+1} / {len(bloklar)} taranıyor (Sayfa {idx+1})...")
                     
                     with Image.open(sayfa_yolu) as img:
                         islem_gorseli = img.convert('RGB')
-                        # YENİ: Yapay zekaya giden resmi daha da küçülttük (1200 piksel). Kotayı yormaz, aktarımı hızlandırır.
                         islem_gorseli.thumbnail((1200, 1200)) 
                     
                     prompt = """Bu görsel bir İş Sağlığı ve Güvenliği belgesidir.
@@ -160,44 +156,29 @@ Lütfen form üzerindeki el yazısı ile yazılmış bilgileri bul:
 Yanıtını sadece aşağıdaki formatta, düz bir JSON olarak ver. Başka hiçbir açıklama ekleme:
 {"isim": "Ad Soyad", "tc": "12345678901"}"""
                     
-                    max_deneme = 3
-                    sayfa_isim = "Bilinmeyen_Kisi"
-                    sayfa_tc = "BilinmeyenTC"
-                    
-                    for deneme in range(max_deneme):
-                        try:
-                            response = model.generate_content([prompt, islem_gorseli])
-                            response_text = response.text.replace("```json", "").replace("```", "").strip()
-                            veri = json.loads(response_text)
-                            
-                            sayfa_isim = dosya_adi_duzenle(veri.get("isim", "Bilinmeyen_Kisi"))
-                            sayfa_tc = dosya_adi_duzenle(str(veri.get("tc", "BilinmeyenTC")))
-                            break
-                        except Exception as e:
-                            # YENİ: Şeffaf Hata Gösterimi ve 30 Saniye Dinlenme
-                            hata_mesaji = str(e).lower()
-                            if "429" in hata_mesaji or "quota" in hata_mesaji or "resource exhausted" in hata_mesaji:
-                                status_text.text(f"API kotası doldu, sistemin sıfırlanması için 30 sn bekleniyor... ({deneme+1}/{max_deneme})")
-                                time.sleep(30)
-                            else:
-                                st.error(f"Sayfa işlenirken beklenmeyen hata oluştu: {str(e)}")
-                                break
+                    try:
+                        response = model.generate_content([prompt, islem_gorseli])
+                        response_text = response.text.replace("```json", "").replace("```", "").strip()
+                        veri = json.loads(response_text)
+                        
+                        sayfa_isim = dosya_adi_duzenle(veri.get("isim", "Bilinmeyen_Kisi"))
+                        sayfa_tc = dosya_adi_duzenle(str(veri.get("tc", "BilinmeyenTC")))
+                        
+                        if sayfa_isim != "Bilinmeyen_Kisi" and sayfa_isim != "":
+                            blok_kisi = sayfa_isim
+                            if sayfa_tc != "BilinmeyenTC" and sayfa_tc != "":
+                                blok_tc = sayfa_tc
+                            islem_gorseli.close()
+                            break # Kimlik bulundu, diğer sayfalara bakma!
+                    except Exception as e:
+                        pass
                                 
                     islem_gorseli.close()
-                    time.sleep(2) 
-                    
-                    if sayfa_isim != "Bilinmeyen_Kisi" and sayfa_isim != "":
-                        blok_kisi = sayfa_isim
-                        if sayfa_tc != "BilinmeyenTC" and sayfa_tc != "":
-                            blok_tc = sayfa_tc
-                        break 
+                    time.sleep(4) # KOTAYI DOLTURMAMAK İÇİN İDEAL GÜVENLİ BEKLEME (Dakikada 15 istek sınırı aşılmaz)
                 
                 if blok_kisi != "Bilinmeyen_Kisi":
                     if aktif_kisi != "Bilinmeyen_Kisi":
-                        isim_benziyor_mu = benzerlik_orani(aktif_kisi, blok_kisi) > 0.70
-                        tc_benziyor_mu = benzerlik_orani(aktif_tc, blok_tc) > 0.80
-                        
-                        if isim_benziyor_mu or tc_benziyor_mu:
+                        if benzerlik_orani(aktif_kisi, blok_kisi) > 0.70 or benzerlik_orani(aktif_tc, blok_tc) > 0.80:
                             blok_kisi = aktif_kisi
                             blok_tc = aktif_tc
                         else:
@@ -241,7 +222,7 @@ Yanıtını sadece aşağıdaki formatta, düz bir JSON olarak ver. Başka hiçb
             
             with open(zip_yolu, "rb") as f:
                 st.session_state.zip_data = f.read()
-            st.session_state.islem_mesaji = f"{basarili_sayisi} sayfa isme ve TC'ye göre yüksek kalitede (300 DPI) arşivlendi."
+            st.session_state.islem_mesaji = f"{basarili_sayisi} sayfa 300 DPI kalitesinde başarıyla ayrıştırıldı."
             
             status_text.text("İşlem tamamlandı!")
 
