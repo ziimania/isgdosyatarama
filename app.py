@@ -1,4 +1,3 @@
-
 import streamlit as st
 import os
 import json
@@ -6,11 +5,28 @@ import zipfile
 import tempfile
 import time
 import shutil
+import re
+
+import cv2
+import numpy as np
 
 import google.generativeai as genai
 
 from pdf2image import convert_from_path
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter
+
+
+# ============================================================
+# GENEL AYARLAR
+# ============================================================
+
+DPI = 300
+
+# İsim crop'unu Gemini'ye göndermeden önce büyütme
+CROP_SCALE = 2.5
+
+# Gemini'den sonra kaç saniye bekleyelim
+API_BEKLEME = 1
 
 
 # ============================================================
@@ -19,76 +35,80 @@ from PIL import Image
 
 def dosya_adi_duzenle(isim):
     """
-    Windows klasör/dosya adında kullanılamayan karakterleri temizler.
+    Klasör adında kullanılamayan karakterleri temizler.
     """
+
     if isim is None:
         return ""
 
     isim = str(isim)
 
-    yasakli_karakterler = '<>:"/\\|?*'
+    yasakli = '<>:"/\\|?*'
 
-    for karakter in yasakli_karakterler:
-        isim = isim.replace(karakter, '')
+    for karakter in yasakli:
+        isim = isim.replace(karakter, "")
 
-    # Satır sonu / gereksiz boşlukları temizle
     isim = isim.replace("\n", " ")
     isim = isim.replace("\r", " ")
 
-    # Birden fazla boşluğu teke indir
     isim = " ".join(isim.split())
 
     return isim.strip().title()
 
 
-def klasor_adi_olustur(isim, tc):
+def isim_normalize(isim):
     """
-    AI tarafından okunan isim ve TC'den güvenli klasör adı oluşturur.
-    """
-
-    isim = dosya_adi_duzenle(isim)
-    tc = dosya_adi_duzenle(tc)
-
-    if not isim or len(isim) < 3:
-        isim = "Bilinmeyen_Kisi"
-
-    if not tc or tc == "None":
-        tc = "BilinmeyenTC"
-
-    return f"{isim}_{tc}"
-
-
-def benzersiz_klasor_yolu(ana_klasor, klasor_adi):
-    """
-    Aynı isimde klasör varsa _1, _2 şeklinde benzersiz isim oluşturur.
+    İki Gemini sonucunu karşılaştırabilmek için normalize eder.
     """
 
-    temel_yol = os.path.join(
-        ana_klasor,
-        klasor_adi
+    if not isim:
+        return ""
+
+    isim = str(isim).upper()
+
+    ceviri = str.maketrans(
+        "ÇĞİÖŞÜ",
+        "CGIOSU"
     )
 
-    if not os.path.exists(temel_yol):
-        return temel_yol
+    isim = isim.translate(ceviri)
 
-    sayac = 1
+    isim = re.sub(
+        r"[^A-Z0-9 ]",
+        " ",
+        isim
+    )
 
-    while True:
+    isim = " ".join(
+        isim.split()
+    )
 
-        yeni_yol = os.path.join(
-            ana_klasor,
-            f"{klasor_adi}_{sayac}"
-        )
+    return isim
 
-        if not os.path.exists(yeni_yol):
-            return yeni_yol
 
-        sayac += 1
+def benzerlik_orani(a, b):
+    """
+    İki isim arasındaki benzerlik oranı.
+    """
+
+    from difflib import SequenceMatcher
+
+    a = isim_normalize(a)
+    b = isim_normalize(b)
+
+    if not a or not b:
+        return 0
+
+    return SequenceMatcher(
+        None,
+        a,
+        b
+    ).ratio()
 
 
 def create_zip(source_dir, output_zip):
     """
-    Ayrıştırılmış klasörleri ZIP dosyasına dönüştürür.
+    Klasörleri ZIP yapar.
     """
 
     with zipfile.ZipFile(
@@ -117,14 +137,687 @@ def create_zip(source_dir, output_zip):
                 )
 
 
+def benzersiz_klasor_yolu(
+    ana_klasor,
+    klasor_adi
+):
+    """
+    Aynı isimde klasör varsa _2, _3 şeklinde devam eder.
+    """
+
+    temel = os.path.join(
+        ana_klasor,
+        klasor_adi
+    )
+
+    if not os.path.exists(temel):
+        return temel
+
+    sayac = 2
+
+    while True:
+
+        yeni = os.path.join(
+            ana_klasor,
+            f"{klasor_adi}_{sayac}"
+        )
+
+        if not os.path.exists(yeni):
+            return yeni
+
+        sayac += 1
+
+
+# ============================================================
+# GÖRÜNTÜ İŞLEME
+# ============================================================
+
+def goruntu_iyilestir(
+    image,
+    scale=CROP_SCALE
+):
+    """
+    Gemini'ye gönderilecek isim bölgesini büyütür,
+    kontrastını artırır ve keskinleştirir.
+    """
+
+    # RGB olduğundan emin ol
+    if image.mode != "RGB":
+        image = image.convert("RGB")
+
+    # Büyüt
+    yeni_w = int(
+        image.width * scale
+    )
+
+    yeni_h = int(
+        image.height * scale
+    )
+
+    image = image.resize(
+        (yeni_w, yeni_h),
+        Image.Resampling.LANCZOS
+    )
+
+    # Kontrast
+    image = ImageEnhance.Contrast(
+        image
+    ).enhance(1.5)
+
+    # Keskinlik
+    image = ImageEnhance.Sharpness(
+        image
+    ).enhance(1.8)
+
+    # Hafif detay artırma
+    image = image.filter(
+        ImageFilter.SHARPEN
+    )
+
+    return image
+
+
+# ============================================================
+# OPEN CV İLE KATILIMCI TABLOSU / İSİM ALANI BULMA
+# ============================================================
+
+def isim_alani_bul(
+    image_path
+):
+    """
+    Sayfanın üst/orta kısmındaki katılımcı tablosunu
+    yatay çizgilerden tespit etmeye çalışır.
+
+    Amaç:
+        ADI SOYADI
+        T.C. KİMLİK NO
+        GÖREVİ
+
+    bölümünü bulmak.
+
+    Başarısız olursa güvenli bir yedek bölge kullanır.
+    """
+
+    try:
+
+        img = cv2.imread(
+            image_path,
+            cv2.IMREAD_GRAYSCALE
+        )
+
+        if img is None:
+            return None
+
+
+        h, w = img.shape
+
+
+        # ----------------------------------------------------
+        # Sayfanın yaklaşık %35-%70 arasını incele
+        # ----------------------------------------------------
+
+        y_baslangic = int(
+            h * 0.35
+        )
+
+        y_bitis = int(
+            h * 0.70
+        )
+
+        roi = img[
+            y_baslangic:y_bitis,
+            :
+        ]
+
+
+        # ----------------------------------------------------
+        # Adaptive threshold
+        # ----------------------------------------------------
+
+        binary = cv2.adaptiveThreshold(
+
+            roi,
+
+            255,
+
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+
+            cv2.THRESH_BINARY_INV,
+
+            31,
+
+            12
+
+        )
+
+
+        # ----------------------------------------------------
+        # Yatay çizgileri bul
+        # ----------------------------------------------------
+
+        yatay_kernel = cv2.getStructuringElement(
+
+            cv2.MORPH_RECT,
+
+            (
+                max(100, int(w * 0.08)),
+                1
+            )
+
+        )
+
+
+        yatay = cv2.morphologyEx(
+
+            binary,
+
+            cv2.MORPH_OPEN,
+
+            yatay_kernel
+
+        )
+
+
+        # ----------------------------------------------------
+        # Her satırdaki yatay çizgi miktarı
+        # ----------------------------------------------------
+
+        satir_piksel = (
+            yatay > 0
+        ).sum(
+            axis=1
+        )
+
+
+        # Minimum çizgi uzunluğu
+        min_cizgi = int(
+            w * 0.25
+        )
+
+
+        adaylar = np.where(
+            satir_piksel >= min_cizgi
+        )[0]
+
+
+        # ----------------------------------------------------
+        # Ardışık satırları grupla
+        # ----------------------------------------------------
+
+        gruplar = []
+
+        for y in adaylar:
+
+            if (
+                not gruplar
+                or
+                y > gruplar[-1][-1] + 2
+            ):
+
+                gruplar.append(
+                    [y]
+                )
+
+            else:
+
+                gruplar[-1].append(
+                    y
+                )
+
+
+        cizgi_yerleri = []
+
+        for grup in gruplar:
+
+            merkez = int(
+                np.mean(grup)
+            )
+
+            cizgi_yerleri.append(
+                merkez
+            )
+
+
+        # ----------------------------------------------------
+        # Katılımcı tablosunu bul
+        #
+        # İki yatay çizgi arasında makul mesafe arıyoruz.
+        # ----------------------------------------------------
+
+        secilen_ust = None
+        secilen_alt = None
+
+        for i in range(
+            len(cizgi_yerleri) - 1
+        ):
+
+            ust = cizgi_yerleri[i]
+            alt = cizgi_yerleri[i + 1]
+
+            mesafe = alt - ust
+
+            # 150-650 px arası alanları değerlendir
+            if 150 <= mesafe <= 650:
+
+                secilen_ust = ust
+                secilen_alt = alt
+
+                # İlk uygun tablo
+                break
+
+
+        # ----------------------------------------------------
+        # BULUNDUYSA
+        # ----------------------------------------------------
+
+        if (
+            secilen_ust is not None
+            and
+            secilen_alt is not None
+        ):
+
+            gercek_ust = (
+                y_baslangic
+                + secilen_ust
+            )
+
+            gercek_alt = (
+                y_baslangic
+                + secilen_alt
+            )
+
+            # Katılımcı tablosunun
+            # üst kısmını ve sol bölümünü al.
+            #
+            # Sağ taraftaki imza alanını almıyoruz.
+
+            x1 = int(
+                w * 0.03
+            )
+
+            x2 = int(
+                w * 0.78
+            )
+
+            # Üst çizgiden biraz aşağı
+            crop_y1 = (
+                gercek_ust + 10
+            )
+
+            # İsmin bulunduğu ilk satırı
+            # kapsayacak şekilde
+            crop_y2 = min(
+                gercek_ust + 280,
+                gercek_alt
+            )
+
+            if crop_y2 > crop_y1:
+
+                return (
+                    x1,
+                    crop_y1,
+                    x2,
+                    crop_y2,
+                    "OpenCV"
+                )
+
+
+        # ====================================================
+        # YEDEK CROP
+        # ====================================================
+
+        # Form yapısı değişirse veya çizgi tespit edilemezse
+        # yaklaşık isim bölgesini kullan.
+        #
+        # Bu bölüm senin mevcut formunun yapısına göre
+        # güvenli bırakılmıştır.
+
+        x1 = int(
+            w * 0.04
+        )
+
+        x2 = int(
+            w * 0.78
+        )
+
+        y1 = int(
+            h * 0.48
+        )
+
+        y2 = int(
+            h * 0.61
+        )
+
+        return (
+            x1,
+            y1,
+            x2,
+            y2,
+            "Yedek"
+        )
+
+
+    except Exception:
+
+        return None
+
+
+# ============================================================
+# CROP OLUŞTUR
+# ============================================================
+
+def isim_crop_olustur(
+    image_path
+):
+    """
+    OpenCV'nin bulduğu bölgeyi PIL görüntüsü olarak döndürür.
+    """
+
+    sonuc = isim_alani_bul(
+        image_path
+    )
+
+    if sonuc is None:
+        return None
+
+    x1, y1, x2, y2, kaynak = sonuc
+
+    try:
+
+        with Image.open(
+            image_path
+        ) as img:
+
+            img = img.convert(
+                "RGB"
+            )
+
+            # Koordinatları sınırla
+            x1 = max(
+                0,
+                min(x1, img.width)
+            )
+
+            x2 = max(
+                0,
+                min(x2, img.width)
+            )
+
+            y1 = max(
+                0,
+                min(y1, img.height)
+            )
+
+            y2 = max(
+                0,
+                min(y2, img.height)
+            )
+
+            if x2 <= x1 or y2 <= y1:
+                return None
+
+            crop = img.crop(
+                (
+                    x1,
+                    y1,
+                    x2,
+                    y2
+                )
+            )
+
+            crop = goruntu_iyilestir(
+                crop
+            )
+
+            return crop, kaynak
+
+
+    except Exception:
+
+        return None
+
+
+# ============================================================
+# GEMINI İLE İSİM OKUMA
+# ============================================================
+
+def gemini_ile_isim_oku(
+    model,
+    crop_list
+):
+    """
+    Bir veya iki sınav yüzünü tek Gemini isteğinde okur.
+    """
+
+    if not crop_list:
+
+        return {
+            "isim1": "",
+            "isim2": "",
+            "final_isim": "",
+            "guven": "dusuk"
+        }
+
+
+    prompt = """
+Bu görseller İş Sağlığı ve Güvenliği sınav formundaki
+KATILIMCI / ADI SOYADI bölümünün kırpılmış görüntüleridir.
+
+Görseller aynı kişiye ait sınavın farklı yüzleri olabilir.
+
+Görevin SADECE el yazısı ile yazılmış kişinin ADI SOYADINI okumaktır.
+
+Çok dikkatli ol.
+
+Önemli kurallar:
+
+1. "ADI SOYADI:" etiketinin kendisini isim olarak alma.
+2. "T.C. KİMLİK NO" bilgisini isim olarak alma.
+3. "GÖREVİ" bilgisini isim olarak alma.
+4. İmza alanını isim olarak alma.
+5. El yazısındaki harfleri mümkün olduğunca doğru çöz.
+6. Aynı kişinin iki görseli varsa ikisini birlikte değerlendir.
+7. Bir görselde harf okunmuyorsa diğer görseli referans al.
+8. İki sonuç arasında küçük yazım farkı varsa aynı kişiyi ifade eden en mantıklı sonucu seç.
+9. Tahmin yaparken mevcut harf şekillerine dayan.
+10. İsim kesinlikle okunamıyorsa "Bilinmeyen_Kisi" yaz.
+
+SADECE aşağıdaki JSON formatında cevap ver:
+
+{
+    "isim1": "Birinci görselde okunan isim",
+    "isim2": "İkinci görselde okunan isim",
+    "final_isim": "En güvenilir Ad Soyad",
+    "guven": "yuksek"
+}
+
+Eğer sadece bir görsel varsa:
+
+{
+    "isim1": "Okunan Ad Soyad",
+    "isim2": "",
+    "final_isim": "Okunan Ad Soyad",
+    "guven": "yuksek"
+}
+
+İsim okunamıyorsa:
+
+{
+    "isim1": "",
+    "isim2": "",
+    "final_isim": "Bilinmeyen_Kisi",
+    "guven": "dusuk"
+}
+
+Başka hiçbir açıklama yazma.
+"""
+
+
+    try:
+
+        icerik = [
+            prompt
+        ]
+
+        # Görselleri ekle
+        for crop in crop_list:
+
+            icerik.append(
+                crop
+            )
+
+
+        response = model.generate_content(
+            icerik
+        )
+
+
+        response_text = (
+            response.text
+            .replace(
+                "```json",
+                ""
+            )
+            .replace(
+                "```",
+                ""
+            )
+            .strip()
+        )
+
+
+        veri = json.loads(
+            response_text
+        )
+
+
+        isim1 = dosya_adi_duzenle(
+            veri.get(
+                "isim1",
+                ""
+            )
+        )
+
+        isim2 = dosya_adi_duzenle(
+            veri.get(
+                "isim2",
+                ""
+            )
+        )
+
+        final_isim = dosya_adi_duzenle(
+            veri.get(
+                "final_isim",
+                ""
+            )
+        )
+
+        guven = str(
+            veri.get(
+                "guven",
+                "dusuk"
+            )
+        ).lower()
+
+
+        # ----------------------------------------------------
+        # Final isim geçersizse iki sonucu kendimiz karşılaştır
+        # ----------------------------------------------------
+
+        if (
+            not final_isim
+            or
+            final_isim.lower()
+            == "bilinmeyen_kisi"
+        ):
+
+            if (
+                isim1
+                and
+                isim2
+            ):
+
+                benzerlik = (
+                    benzerlik_orani(
+                        isim1,
+                        isim2
+                    )
+                )
+
+                if benzerlik >= 0.70:
+
+                    # Birinci sonucu kullan
+                    final_isim = isim1
+
+                    guven = "orta"
+
+            elif isim1:
+
+                final_isim = isim1
+
+            elif isim2:
+
+                final_isim = isim2
+
+
+        # ----------------------------------------------------
+        # Çok kısa isimleri reddet
+        # ----------------------------------------------------
+
+        if (
+            not final_isim
+            or
+            len(final_isim) < 4
+            or
+            final_isim.lower()
+            == "bilinmeyen_kisi"
+        ):
+
+            final_isim = "Bilinmeyen_Kisi"
+
+            guven = "dusuk"
+
+
+        return {
+
+            "isim1": isim1,
+
+            "isim2": isim2,
+
+            "final_isim": final_isim,
+
+            "guven": guven
+
+        }
+
+
+    except Exception as e:
+
+        return {
+
+            "isim1": "",
+
+            "isim2": "",
+
+            "final_isim": "Bilinmeyen_Kisi",
+
+            "guven": "dusuk"
+
+        }
+
+
 # ============================================================
 # STREAMLIT AYARLARI
 # ============================================================
 
 st.set_page_config(
+
     page_title="İSG Belge Ayrıştırıcı",
+
     page_icon="📄",
+
     layout="centered"
+
 )
 
 
@@ -133,9 +826,12 @@ st.set_page_config(
 # ============================================================
 
 if "zip_data" not in st.session_state:
+
     st.session_state.zip_data = None
 
+
 if "islem_mesaji" not in st.session_state:
+
     st.session_state.islem_mesaji = ""
 
 
@@ -143,11 +839,14 @@ if "islem_mesaji" not in st.session_state:
 # BAŞLIK
 # ============================================================
 
-st.title("📄 İSG Belge Ayrıştırıcı")
+st.title(
+    "📄 İSG Belge Ayrıştırıcı"
+)
 
 st.write(
-    "PDF içerisindeki belgeleri kişi başına belirlenen sayfa sayısına "
-    "göre ayırır ve sınav formundaki isim bilgisine göre klasörler."
+    "Belgeleri kişi başına belirlenen sayıda böler, "
+    "sınav formundaki isim alanını otomatik bulur ve "
+    "Gemini ile el yazısı adı okur."
 )
 
 
@@ -156,55 +855,82 @@ st.write(
 # ============================================================
 
 api_key = st.text_input(
+
     "Gemini API Anahtarınızı Girin:",
+
     type="password",
+
     autocomplete="current-password"
+
 )
 
 
 # ============================================================
-# BELGE DİZİLİMİ
+# SAYFA AYARLARI
 # ============================================================
 
-st.markdown("### ⚙️ Belge Dizilimi")
+st.markdown(
+    "### ⚙️ Belge Dizilimi"
+)
+
 
 col1, col2 = st.columns(2)
+
 
 with col1:
 
     sinav_sayfa = st.number_input(
+
         "Sınav Sayfa Sayısı:",
+
         min_value=0,
+
         value=2,
+
         step=1
+
     )
+
 
 with col2:
 
     talimat_sayfa = st.number_input(
+
         "Talimat Sayfa Sayısı:",
+
         min_value=0,
+
         value=4,
+
         step=1
+
     )
 
 
-# Her kişinin toplam sayfa sayısı
-blok_boyutu = sinav_sayfa + talimat_sayfa
+blok_boyutu = (
+    sinav_sayfa
+    +
+    talimat_sayfa
+)
 
 
 st.info(
+
     f"Her kişi için toplam **{blok_boyutu} sayfa** ayrılacak."
+
 )
 
 
 # ============================================================
-# PDF YÜKLE
+# PDF
 # ============================================================
 
 uploaded_file = st.file_uploader(
-    "Lütfen tarama yapılmış PDF dosyasını yükleyin",
+
+    "Lütfen taranmış PDF dosyasını yükleyin",
+
     type="pdf"
+
 )
 
 
@@ -213,9 +939,13 @@ uploaded_file = st.file_uploader(
 # ============================================================
 
 if st.button(
+
     "🚀 Ayrıştırmayı Başlat",
+
     type="primary"
+
 ):
+
 
     # --------------------------------------------------------
     # KONTROLLER
@@ -224,7 +954,7 @@ if st.button(
     if not api_key:
 
         st.error(
-            "Lütfen Gemini API anahtarınızı girin!"
+            "Lütfen Gemini API anahtarınızı girin."
         )
 
         st.stop()
@@ -233,7 +963,7 @@ if st.button(
     if not uploaded_file:
 
         st.error(
-            "Lütfen işlenecek PDF dosyasını yükleyin!"
+            "Lütfen PDF dosyasını yükleyin."
         )
 
         st.stop()
@@ -249,16 +979,17 @@ if st.button(
 
 
     # --------------------------------------------------------
-    # SESSION RESET
+    # RESET
     # --------------------------------------------------------
 
     st.session_state.zip_data = None
+
     st.session_state.islem_mesaji = ""
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # GEMINI BAĞLANTISI
-    # --------------------------------------------------------
+    # ========================================================
 
     try:
 
@@ -266,25 +997,25 @@ if st.button(
             api_key=api_key
         )
 
-        uygun_model = None
 
         aktif_modeller = []
 
 
-        # Kullanılabilir modelleri bul
-        for model_bilgisi in genai.list_models():
+        for m in genai.list_models():
 
             if (
                 "generateContent"
-                in model_bilgisi.supported_generation_methods
+                in m.supported_generation_methods
             ):
 
                 aktif_modeller.append(
-                    model_bilgisi.name
+                    m.name
                 )
 
 
-        # Öncelikli modeller
+        uygun_model = None
+
+
         oncelikli_modeller = [
 
             "gemini-3.8-flash",
@@ -298,33 +1029,38 @@ if st.button(
         ]
 
 
-        # Öncelikli model seç
         for oncelik in oncelikli_modeller:
 
-            for model_adi in aktif_modeller:
+            for ad in aktif_modeller:
 
                 if (
-                    oncelik in model_adi
-                    and "preview" not in model_adi
-                    and "lite" not in model_adi
+
+                    oncelik in ad
+
+                    and
+                    "preview" not in ad
+
+                    and
+                    "lite" not in ad
+
                 ):
 
-                    uygun_model = model_adi
+                    uygun_model = ad
 
                     break
+
 
             if uygun_model:
                 break
 
 
-        # Bulamazsa herhangi bir Flash model
         if not uygun_model:
 
-            for model_adi in aktif_modeller:
+            for ad in aktif_modeller:
 
-                if "flash" in model_adi:
+                if "flash" in ad:
 
-                    uygun_model = model_adi
+                    uygun_model = ad
 
                     break
 
@@ -332,8 +1068,11 @@ if st.button(
         if not uygun_model:
 
             st.error(
-                "Görsel işleyebilen Gemini modeli bulunamadı!\n\n"
-                f"Mevcut modeller: {aktif_modeller}"
+
+                "Görsel işleyebilen Gemini modeli bulunamadı.\n\n"
+
+                + str(aktif_modeller)
+
             )
 
             st.stop()
@@ -352,57 +1091,83 @@ if st.button(
     except Exception as e:
 
         st.error(
-            f"API Yapılandırma Hatası: {e}"
+            f"Gemini bağlantı hatası: {e}"
         )
 
         st.stop()
 
 
     # ========================================================
-    # GEÇİCİ ÇALIŞMA KLASÖRÜ
+    # GEÇİCİ KLASÖR
     # ========================================================
 
     with tempfile.TemporaryDirectory() as temp_dir:
 
+
         pdf_path = os.path.join(
+
             temp_dir,
+
             "yuklenen_dosya.pdf"
+
         )
+
 
         orijinal_klasor = os.path.join(
+
             temp_dir,
+
             "Orijinal_Sayfalar"
+
         )
 
-        ayrilmis_klasor_yolu = os.path.join(
+
+        ayrilmis_klasor = os.path.join(
+
             temp_dir,
+
             "Ayrilmis_Dosyalar"
+
         )
+
 
         zip_yolu = os.path.join(
+
             temp_dir,
+
             "ISG_Dosyalari.zip"
+
         )
 
 
         os.makedirs(
+
             orijinal_klasor,
+
             exist_ok=True
+
         )
 
+
         os.makedirs(
-            ayrilmis_klasor_yolu,
+
+            ayrilmis_klasor,
+
             exist_ok=True
+
         )
 
 
         # ----------------------------------------------------
-        # PDF'Yİ KAYDET
+        # PDF KAYDET
         # ----------------------------------------------------
 
         with open(
+
             pdf_path,
+
             "wb"
+
         ) as f:
 
             f.write(
@@ -410,12 +1175,12 @@ if st.button(
             )
 
 
-        # ----------------------------------------------------
-        # PDF -> 300 DPI TIFF
-        # ----------------------------------------------------
+        # ====================================================
+        # PDF -> TIFF
+        # ====================================================
 
         st.info(
-            "PDF okunuyor ve sayfalar 300 DPI kalitesinde hazırlanıyor..."
+            "PDF 300 DPI olarak sayfalara ayrılıyor..."
         )
 
 
@@ -425,7 +1190,7 @@ if st.button(
 
                 pdf_path,
 
-                dpi=300,
+                dpi=DPI,
 
                 output_folder=orijinal_klasor,
 
@@ -439,8 +1204,7 @@ if st.button(
         except Exception as e:
 
             st.error(
-                "PDF parçalanamadı: "
-                + str(e)
+                f"PDF parçalanamadı: {e}"
             )
 
             st.stop()
@@ -454,29 +1218,28 @@ if st.button(
         if toplam_sayfa == 0:
 
             st.error(
-                "PDF içerisinde sayfa bulunamadı."
+                "PDF'de sayfa bulunamadı."
             )
 
             st.stop()
 
 
-        st.success(
-            f"PDF içerisinde {toplam_sayfa} sayfa bulundu."
-        )
-
-
-        # ----------------------------------------------------
-        # KAÇ KİŞİ / BLOK OLACAĞINI HESAPLA
-        # ----------------------------------------------------
+        # ====================================================
+        # BLOKLAR
+        # ====================================================
 
         bloklar = [
 
             sayfa_yollari[i:i + blok_boyutu]
 
             for i in range(
+
                 0,
+
                 toplam_sayfa,
+
                 blok_boyutu
+
             )
 
         ]
@@ -488,28 +1251,30 @@ if st.button(
 
 
         st.info(
-            f"Toplam {toplam_blok} kişi/dosya bloğu oluşturulacak."
+
+            f"{toplam_sayfa} sayfa bulundu. "
+
+            f"{toplam_blok} kişi bloğu oluşturulacak."
+
         )
 
 
-        # ----------------------------------------------------
-        # PROGRESS
-        # ----------------------------------------------------
+        progress = st.progress(
+            0
+        )
 
-        progress_bar = st.progress(0)
-
-        status_text = st.empty()
+        status = st.empty()
 
 
         islenen_sayfa = 0
 
-        basarili_sayisi = 0
+        basarili = 0
 
-        basarisiz_isim_sayisi = 0
+        kontrol_sayisi = 0
 
 
         # ====================================================
-        # ANA BLOK DÖNGÜSÜ
+        # BLOK DÖNGÜSÜ
         # ====================================================
 
         for blok_no, blok_sayfalari in enumerate(
@@ -517,33 +1282,21 @@ if st.button(
         ):
 
 
-            # ------------------------------------------------
-            # BLOK BAŞLANGICI
-            # ------------------------------------------------
-
-            status_text.text(
+            status.text(
 
                 f"📦 {blok_no + 1}/{toplam_blok} "
-                f"numaralı kişi hazırlanıyor..."
+                f"hazırlanıyor..."
 
             )
 
 
             # ------------------------------------------------
             # GEÇİCİ KLASÖR
-            #
-            # Örneğin:
-            #
-            # GEÇİCİ_1
-            # GEÇİCİ_2
-            # GEÇİCİ_3
-            #
-            # Daha sonra isimle değiştirilecek.
             # ------------------------------------------------
 
             gecici_klasor = os.path.join(
 
-                ayrilmis_klasor_yolu,
+                ayrilmis_klasor,
 
                 f"GEÇİCİ_{blok_no + 1}"
 
@@ -551,26 +1304,25 @@ if st.button(
 
 
             os.makedirs(
+
                 gecici_klasor,
+
                 exist_ok=True
+
             )
 
 
-            # ------------------------------------------------
-            # BU BLOĞUN SAYFALARINI KLASÖRE KOY
-            # ------------------------------------------------
-
             gecici_sayfalar = []
 
+
+            # =================================================
+            # SAYFALARI BLOĞA KOY
+            # =================================================
 
             for idx, sayfa_yolu in enumerate(
                 blok_sayfalari
             ):
 
-
-                # --------------------------------------------
-                # DOSYA İSMİ
-                # --------------------------------------------
 
                 if idx < sinav_sayfa:
 
@@ -580,7 +1332,9 @@ if st.button(
 
 
                 elif idx < (
-                    sinav_sayfa + talimat_sayfa
+                    sinav_sayfa
+                    +
+                    talimat_sayfa
                 ):
 
                     dosya_adi = (
@@ -594,11 +1348,14 @@ if st.button(
                 else:
 
                     dosya_adi = (
-                        f"Ekstra_Belge_{idx + 1}.tiff"
+
+                        f"Ekstra_Belge_"
+                        f"{idx + 1}.tiff"
+
                     )
 
 
-                hedef_yol = os.path.join(
+                hedef = os.path.join(
 
                     gecici_klasor,
 
@@ -607,248 +1364,176 @@ if st.button(
                 )
 
 
-                # --------------------------------------------
-                # SAYFAYI TAŞI
-                # --------------------------------------------
-
                 shutil.move(
 
                     sayfa_yolu,
 
-                    hedef_yol
+                    hedef
 
                 )
 
 
                 gecici_sayfalar.append(
-                    hedef_yol
+                    hedef
                 )
 
 
                 islenen_sayfa += 1
 
 
-                progress_bar.progress(
+                progress.progress(
 
                     min(
-                        islenen_sayfa / toplam_sayfa,
+
+                        islenen_sayfa
+                        /
+                        toplam_sayfa,
+
                         1.0
+
                     )
 
                 )
 
 
             # =================================================
-            # AI İLE İSİM OKUMA
+            # SINAV SAYFALARINI BUL
             # =================================================
 
-            blok_kisi = "Bilinmeyen_Kisi"
+            sinav_sayfalari = []
 
-            blok_tc = "BilinmeyenTC"
+            for sayfa in gecici_sayfalar:
+
+                if os.path.basename(
+                    sayfa
+                ).startswith("Sinav_"):
+
+                    sinav_sayfalari.append(
+                        sayfa
+                    )
 
 
-            # ------------------------------------------------
-            # İSİM OKUNACAK SAYFA
-            #
-            # Normal durumda:
-            # Sinav_1.tiff
-            #
-            # Eğer sınav sayfası yoksa ilk sayfa.
-            # ------------------------------------------------
+            # =================================================
+            # İSİM CROPLARINI OLUŞTUR
+            # =================================================
 
-            if len(gecici_sayfalar) > 0:
+            crop_list = []
 
-                okunacak_sayfa = (
-                    gecici_sayfalar[0]
+            crop_kaynaklari = []
+
+
+            for sinav_sayfa_yolu in sinav_sayfalari:
+
+
+                crop_sonuc = isim_crop_olustur(
+
+                    sinav_sayfa_yolu
+
                 )
 
 
-                status_text.text(
+                if crop_sonuc is not None:
 
-                    f"🔎 {blok_no + 1}/{toplam_blok} "
-                    f"kişinin adı okunuyor..."
+                    crop, kaynak = crop_sonuc
+
+                    crop_list.append(
+                        crop
+                    )
+
+                    crop_kaynaklari.append(
+                        kaynak
+                    )
+
+
+            # =================================================
+            # GEMINI'YE GÖNDER
+            # =================================================
+
+            status.text(
+
+                f"🔎 {blok_no + 1}/{toplam_blok} "
+                f"numaralı kişinin adı okunuyor..."
+
+            )
+
+
+            sonuc = gemini_ile_isim_oku(
+
+                model,
+
+                crop_list
+
+            )
+
+
+            isim1 = sonuc.get(
+                "isim1",
+                ""
+            )
+
+            isim2 = sonuc.get(
+                "isim2",
+                ""
+            )
+
+            final_isim = sonuc.get(
+                "final_isim",
+                "Bilinmeyen_Kisi"
+            )
+
+            guven = sonuc.get(
+                "guven",
+                "dusuk"
+            )
+
+
+            # =================================================
+            # İSİM KONTROLÜ
+            # =================================================
+
+            if (
+
+                final_isim
+                ==
+                "Bilinmeyen_Kisi"
+
+                or
+                len(final_isim) < 4
+
+            ):
+
+                kontrol_sayisi += 1
+
+                klasor_adi = (
+
+                    f"KONTROL_GEREKLI_"
+                    f"{blok_no + 1:03d}"
 
                 )
 
 
-                try:
+            else:
 
-                    # ----------------------------------------
-                    # GÖRSELİ AÇ
-                    # ----------------------------------------
-
-                    with Image.open(
-                        okunacak_sayfa
-                    ) as img:
-
-                        islem_gorseli = img.convert(
-                            "RGB"
-                        )
-
-
-                        # ------------------------------------
-                        # AI PROMPT
-                        # ------------------------------------
-
-                        prompt = """
-Bu görsel bir İş Sağlığı ve Güvenliği eğitim veya sınav formudur.
-
-Formun üst kısmındaki kişisel bilgileri dikkatlice incele.
-
-Özellikle şu alanları bul:
-
-1. "ADI SOYADI:" veya buna benzer alandaki kişinin AD SOYADINI oku.
-
-2. "T.C. KİMLİK NO:" veya "TC KİMLİK NO:" alanındaki
-11 haneli T.C. kimlik numarasını oku.
-
-ÖNEMLİ:
-
-- El yazısı olabilir.
-- Harfleri dikkatlice ayırt et.
-- İsim okunabiliyorsa mümkün olan en doğru şekilde yaz.
-- İsim kesinlikle okunamıyorsa "Bilinmeyen_Kisi" yaz.
-- TC okunamıyorsa "BilinmeyenTC" yaz.
-- Başka açıklama yazma.
-
-SADECE aşağıdaki JSON formatında cevap ver:
-
-{
-    "isim": "Ad Soyad",
-    "tc": "12345678901"
-}
-"""
-
-
-                        # ------------------------------------
-                        # GEMINI
-                        # ------------------------------------
-
-                        response = model.generate_content(
-
-                            [
-                                prompt,
-                                islem_gorseli
-                            ]
-
-                        )
-
-
-                        # ------------------------------------
-                        # RESPONSE TEMİZLE
-                        # ------------------------------------
-
-                        response_text = (
-                            response.text
-                            .replace(
-                                "```json",
-                                ""
-                            )
-                            .replace(
-                                "```",
-                                ""
-                            )
-                            .strip()
-                        )
-
-
-                        # ------------------------------------
-                        # JSON OKU
-                        # ------------------------------------
-
-                        veri = json.loads(
-                            response_text
-                        )
-
-
-                        # ------------------------------------
-                        # İSİM
-                        # ------------------------------------
-
-                        okunan_isim = veri.get(
-                            "isim",
-                            "Bilinmeyen_Kisi"
-                        )
-
-
-                        blok_kisi = dosya_adi_duzenle(
-                            okunan_isim
-                        )
-
-
-                        # ------------------------------------
-                        # TC
-                        # ------------------------------------
-
-                        okunan_tc = veri.get(
-                            "tc",
-                            "BilinmeyenTC"
-                        )
-
-
-                        blok_tc = dosya_adi_duzenle(
-                            str(okunan_tc)
-                        )
-
-
-                        # ------------------------------------
-                        # GEÇERSİZ İSİM KONTROLÜ
-                        # ------------------------------------
-
-                        if (
-
-                            not blok_kisi
-
-                            or len(blok_kisi) < 3
-
-                            or blok_kisi.lower()
-                            == "bilinmeyen_kisi"
-
-                        ):
-
-                            blok_kisi = "Bilinmeyen_Kisi"
-
-                            basarisiz_isim_sayisi += 1
-
-
-                except Exception as e:
-
-                    # AI okuyamazsa işlem durmayacak
-                    blok_kisi = "Bilinmeyen_Kisi"
-
-                    blok_tc = "BilinmeyenTC"
-
-                    basarisiz_isim_sayisi += 1
+                klasor_adi = dosya_adi_duzenle(
+                    final_isim
+                )
 
 
             # =================================================
-            # KLASÖRÜ İSİMLENDİR
+            # KLASÖRÜN YENİ ADI
             # =================================================
 
-            yeni_klasor_adi = klasor_adi_olustur(
+            hedef_klasor = benzersiz_klasor_yolu(
 
-                blok_kisi,
+                ayrilmis_klasor,
 
-                blok_tc
+                klasor_adi
 
             )
 
 
             # ------------------------------------------------
-            # BENZERSİZ KLASÖR YOLU
-            # ------------------------------------------------
-
-            yeni_klasor = benzersiz_klasor_yolu(
-
-                ayrilmis_klasor_yolu,
-
-                yeni_klasor_adi
-
-            )
-
-
-            # ------------------------------------------------
-            # GEÇİCİ KLASÖRÜ İSİMLENDİR
+            # GEÇİCİ KLASÖRÜ YENİ ADLA DEĞİŞTİR
             # ------------------------------------------------
 
             try:
@@ -857,52 +1542,61 @@ SADECE aşağıdaki JSON formatında cevap ver:
 
                     gecici_klasor,
 
-                    yeni_klasor
+                    hedef_klasor
 
                 )
-
 
             except Exception as e:
 
-                # Rename başarısız olursa mevcut klasörü
-                # kaybetmemek için hata göster.
-
                 st.warning(
 
-                    f"{blok_no + 1}. klasör "
-                    f"yeniden adlandırılamadı: {e}"
+                    f"Klasör adı değiştirilemedi: {e}"
 
                 )
 
 
-            # ------------------------------------------------
-            # DURUM
-            # ------------------------------------------------
+            # =================================================
+            # DEBUG BİLGİSİ
+            # =================================================
 
-            status_text.text(
+            if final_isim != "Bilinmeyen_Kisi":
 
-                f"✅ {blok_no + 1}/{toplam_blok} "
-                f"→ {blok_kisi} "
-                f"({len(blok_sayfalari)} sayfa)"
+                status.text(
 
-            )
+                    f"✅ {blok_no + 1}/{toplam_blok} → "
+                    f"{final_isim}"
+
+                )
+
+            else:
+
+                status.text(
+
+                    f"⚠️ {blok_no + 1}/{toplam_blok} → "
+                    f"İsim okunamadı"
+
+                )
 
 
-            basarili_sayisi += len(
+            basarili += len(
                 blok_sayfalari
             )
 
 
-            # Gemini API kotasını zorlamamak için
-            # küçük bekleme
-            time.sleep(1)
+            # ------------------------------------------------
+            # API BEKLEME
+            # ------------------------------------------------
+
+            time.sleep(
+                API_BEKLEME
+            )
 
 
         # ====================================================
-        # ZIP OLUŞTUR
+        # ZIP
         # ====================================================
 
-        status_text.text(
+        status.text(
             "📦 Klasörler ZIP dosyasına dönüştürülüyor..."
         )
 
@@ -911,7 +1605,7 @@ SADECE aşağıdaki JSON formatında cevap ver:
 
             create_zip(
 
-                ayrilmis_klasor_yolu,
+                ayrilmis_klasor,
 
                 zip_yolu
 
@@ -927,51 +1621,54 @@ SADECE aşağıdaki JSON formatında cevap ver:
             st.stop()
 
 
-        # ----------------------------------------------------
-        # ZIP'İ MEMORY'YE AL
-        # ----------------------------------------------------
+        # ====================================================
+        # ZIP MEMORY
+        # ====================================================
 
         with open(
+
             zip_yolu,
+
             "rb"
+
         ) as f:
 
             st.session_state.zip_data = f.read()
 
 
-        # ----------------------------------------------------
-        # SONUÇ MESAJI
-        # ----------------------------------------------------
+        # ====================================================
+        # SONUÇ
+        # ====================================================
 
         st.session_state.islem_mesaji = (
 
-            f"{basarili_sayisi} sayfa başarıyla ayrıştırıldı. "
+            f"✅ {basarili} sayfa işlendi. "
             f"{toplam_blok} kişi klasörü oluşturuldu."
 
         )
 
 
-        if basarisiz_isim_sayisi > 0:
+        if kontrol_sayisi > 0:
 
             st.session_state.islem_mesaji += (
 
-                f" {basarisiz_isim_sayisi} klasörde isim "
-                f"AI tarafından okunamadığı için "
-                f"'Bilinmeyen_Kisi' kullanıldı."
+                f" ⚠️ {kontrol_sayisi} kişi "
+                f"manuel kontrol için ayrıldı."
 
             )
 
 
-        status_text.text(
+        progress.progress(
+            1.0
+        )
+
+        status.text(
             "🎉 İşlem tamamlandı!"
         )
 
 
-        progress_bar.progress(1.0)
-
-
 # ============================================================
-# ZIP İNDİRME
+# İNDİR
 # ============================================================
 
 if st.session_state.zip_data is not None:
