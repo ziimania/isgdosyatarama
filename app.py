@@ -82,7 +82,7 @@ if st.button("Ayrıştırmayı Başlat", type="primary"):
 
             for i, sayfa_yolu in enumerate(sayfa_yollari):
                 status_text.text(f"Sayfa {i+1} / {toplam_sayfa} analiz ediliyor...")
-             with Image.open(sayfa_yolu) as img:
+with Image.open(sayfa_yolu) as img:
     islem_gorseli = img.convert('RGB') 
     # Siyah-beyaz ve boyut küçültme iptal edildi. 
     # Mavi tükenmez kalem orijinal netliğinde yapay zekaya gidecek.
