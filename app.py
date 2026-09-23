@@ -108,4 +108,3 @@ if st.button("Ayrıştırmayı Başlat", type="primary"):
                     try:
                         response = model.generate_content([prompt, islem_gorseli])
                       response_text = response.text.replace("```json", "").replace("```", "").strip()
-                    
