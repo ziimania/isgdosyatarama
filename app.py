@@ -82,37 +82,37 @@ if st.button("Ayrıştırmayı Başlat", type="primary"):
 
             for i, sayfa_yolu in enumerate(sayfa_yollari):
                 status_text.text(f"Sayfa {i+1} / {toplam_sayfa} analiz ediliyor...")
-with Image.open(sayfa_yolu) as img:
-    islem_gorseli = img.convert('RGB') 
-    # Siyah-beyaz ve boyut küçültme iptal edildi. 
-    # Mavi tükenmez kalem orijinal netliğinde yapay zekaya gidecek.
-         
-prompt = f"""
-Bu görsel bir İş Sağlığı ve Güvenliği (İSG) belgesidir. 
-{f"KULLANICI KILAVUZU: {kullanici_ipucu}" if kullanici_ipucu else ""}
-
-Lütfen form üzerindeki kutucuklara el yazısı ile yazılmış bilgileri bul:
-1. "ADI SOYADI:" başlığının yanındaki el yazısı ismi (Örn: Naime Kaya). Okunmuyorsa "Bilinmeyen Kisi" yaz.
-2. "T.C. KİMLİK NO:" başlığının yanındaki 11 haneli el yazısı rakamı. Okunmuyorsa "BilinmeyenTC" yaz.
-3. Belge Türünü ("Sinav" veya "Talimat") olarak belirle.
-
-Yanıtını sadece aşağıdaki formatta, düz bir JSON olarak ver. Başka hiçbir açıklama ekleme:
-{{"isim": "Ad Soyad", "tc": "12345678901", "tur": "Sinav veya Talimat"}}
-"""
-okunan_isim = "Bilinmeyen_Kisi"
-okunan_tc = "BilinmeyenTC"
-belge_turu = "Hata"
                 
-max_deneme = 3
-for deneme in range(max_deneme):
-try:
-response = model.generate_content([prompt, islem_gorseli])
-response_text = response.text.replace("```json", "").replace("```", "").strip()
-veri = json.loads(response_text)
-
-okunan_isim = dosya_adi_duzenle(veri.get("isim", "Bilinmeyen_Kisi"))
-okunan_tc = dosya_adi_duzenle(str(veri.get("tc", "BilinmeyenTC")))
-belge_turu = veri.get("tur", "Bilinmeyen_Tur").lower()
+                with Image.open(sayfa_yolu) as img:
+                    islem_gorseli = img.convert('RGB')
+                
+                prompt = f"""
+                Bu görsel bir İş Sağlığı ve Güvenliği (İSG) belgesidir. 
+                {f"KULLANICI KILAVUZU: {kullanici_ipucu}" if kullanici_ipucu else ""}
+                
+                Lütfen form üzerindeki kutucuklara el yazısı ile yazılmış bilgileri bul:
+                1. "ADI SOYADI:" başlığının yanındaki el yazısı ismi (Örn: Naime Kaya). Okunmuyorsa "Bilinmeyen Kisi" yaz.
+                2. "T.C. KİMLİK NO:" başlığının yanındaki 11 haneli el yazısı rakamı. Okunmuyorsa "BilinmeyenTC" yaz.
+                3. Belge Türünü ("Sinav" veya "Talimat") olarak belirle.
+                
+                Yanıtını sadece aşağıdaki formatta, düz bir JSON olarak ver. Başka hiçbir açıklama ekleme:
+                {{"isim": "Ad Soyad", "tc": "12345678901", "tur": "Sinav veya Talimat"}}
+                """
+                
+                okunan_isim = "Bilinmeyen_Kisi"
+                okunan_tc = "BilinmeyenTC"
+                belge_turu = "Hata"
+                
+                max_deneme = 3
+                for deneme in range(max_deneme):
+                    try:
+                        response = model.generate_content([prompt, islem_gorseli])
+                        response_text = response.text.replace("```json", "").replace("```", "").strip()
+                        veri = json.loads(response_text)
+                        
+                        okunan_isim = dosya_adi_duzenle(veri.get("isim", "Bilinmeyen_Kisi"))
+                        okunan_tc = dosya_adi_duzenle(str(veri.get("tc", "BilinmeyenTC")))
+                        belge_turu = veri.get("tur", "Bilinmeyen_Tur").lower()
                         break
                     except Exception as e:
                         if "429" in str(e) or "quota" in str(e).lower():
