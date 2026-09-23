@@ -4,7 +4,6 @@ import json
 import zipfile
 import tempfile
 import time
-import shutil
 import re
 import google.generativeai as genai
 from pdf2image import convert_from_path
@@ -199,7 +198,6 @@ if st.session_state.asama == "yukleme":
 
             st.info("PDF okunuyor, 300 DPI ve LZW sıkıştırma ile kalitesi bozulmadan kaydediliyor...")
             try:
-                # LZW sıkıştırmalı yüksek kaliteli TIFF kayıt yöntemi
                 temp_images = convert_from_path(pdf_path, dpi=300)
                 sayfa_yollari = []
                 for idx, img in enumerate(temp_images):
