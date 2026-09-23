@@ -11,7 +11,7 @@ from PIL import Image
 from difflib import SequenceMatcher
 
 def benzerlik_orani(a, b):
-    # İki metin arasındaki benzerlik yüzdesini ölçer (Yazım hatalarını yakalamak için)
+    # İki metin arasındaki benzerlik yüzdesini ölçer
     return SequenceMatcher(None, str(a).lower(), str(b).lower()).ratio()
 
 def dosya_adi_duzenle(isim):
@@ -29,6 +29,12 @@ def create_zip(source_dir, output_zip):
                 zipf.write(file_path, arcname)
 
 st.set_page_config(page_title="İSG Belge Ayrıştırıcı", page_icon="📄", layout="centered")
+
+# HAFIZA (SESSION STATE) TANIMLAMALARI - Dosya kaybolmasını engeller
+if "zip_data" not in st.session_state:
+    st.session_state.zip_data = None
+if "islem_mesaji" not in st.session_state:
+    st.session_state.islem_mesaji = ""
 
 st.title("📄 İSG Belge Ayrıştırıcı (Akıllı Blok Mimarisi)")
 
@@ -54,6 +60,10 @@ if st.button("Ayrıştırmayı Başlat", type="primary"):
     elif blok_boyutu == 0:
         st.error("Toplam sayfa sayısı 0 olamaz. Lütfen Sınav veya Talimat sayfası girin.")
     else:
+        # Eski hafızayı temizle
+        st.session_state.zip_data = None
+        st.session_state.islem_mesaji = ""
+        
         try:
             genai.configure(api_key=api_key)
             
@@ -121,7 +131,6 @@ if st.button("Ayrıştırmayı Başlat", type="primary"):
             progress_bar = st.progress(0)
             status_text = st.empty()
             
-            # PDF'i girilen sayfa sayılarına göre (örn: 6'şarlı) bloklara bölme
             bloklar = [sayfa_yollari[i:i + blok_boyutu] for i in range(0, toplam_sayfa, blok_boyutu)]
             
             aktif_kisi = "Bilinmeyen_Kisi"
@@ -129,19 +138,16 @@ if st.button("Ayrıştırmayı Başlat", type="primary"):
             islenen_sayfa = 0
             basarili_sayisi = 0
 
-            # HER BİR BLOK (KİŞİ) İÇİN DÖNGÜ
             for blok_no, blok_sayfalari in enumerate(bloklar):
                 blok_kisi = "Bilinmeyen_Kisi"
                 blok_tc = "BilinmeyenTC"
                 
-                # AŞAMA 1: Kimlik Avı (Blok içindeki sayfalarda İsim ve TC arar)
                 for sayfa_yolu in blok_sayfalari:
                     status_text.text(f"Blok {blok_no+1} / {len(bloklar)} taranıyor (Kimlik Tespiti)...")
                     
                     with Image.open(sayfa_yolu) as img:
                         islem_gorseli = img.convert('RGB')
                     
-                    # Sadece isim ve TC arıyoruz, evrak türüne yapay zeka karar vermeyecek
                     prompt = """Bu görsel bir İş Sağlığı ve Güvenliği belgesidir.
 Lütfen form üzerindeki el yazısı ile yazılmış bilgileri bul:
 1. "ADI SOYADI:" başlığının yanındaki el yazısı ismi. Okunmuyorsa "Bilinmeyen_Kisi" yaz.
@@ -157,88 +163,4 @@ Yanıtını sadece aşağıdaki formatta, düz bir JSON olarak ver. Başka hiçb
                     for deneme in range(max_deneme):
                         try:
                             response = model.generate_content([prompt, islem_gorseli])
-                            response_text = response.text.replace("```json", "").replace("```", "").strip()
-                            veri = json.loads(response_text)
-                            
-                            sayfa_isim = dosya_adi_duzenle(veri.get("isim", "Bilinmeyen_Kisi"))
-                            sayfa_tc = dosya_adi_duzenle(str(veri.get("tc", "BilinmeyenTC")))
-                            break
-                        except Exception as e:
-                            if "429" in str(e) or "quota" in str(e).lower():
-                                status_text.text(f"API sınırı, 10 sn bekleniyor... ({deneme+1}/{max_deneme})")
-                                time.sleep(10)
-                            else:
-                                break
-                                
-                    islem_gorseli.close()
-                    time.sleep(3)
-                    
-                    # Eğer bu sayfada kimlik bulduysak, bloğun kalan sayfalarını tarayıp API'yi yormaya gerek yok
-                    if sayfa_isim != "Bilinmeyen_Kisi" and sayfa_isim != "":
-                        blok_kisi = sayfa_isim
-                        if sayfa_tc != "BilinmeyenTC" and sayfa_tc != "":
-                            blok_tc = sayfa_tc
-                        break 
-                
-                # AŞAMA 2: Güvenlik Kalkanı (Yazım Hatalarını Birleştirme)
-                if blok_kisi != "Bilinmeyen_Kisi":
-                    if aktif_kisi != "Bilinmeyen_Kisi":
-                        isim_benziyor_mu = benzerlik_orani(aktif_kisi, blok_kisi) > 0.70
-                        tc_benziyor_mu = benzerlik_orani(aktif_tc, blok_tc) > 0.80
-                        
-                        if isim_benziyor_mu or tc_benziyor_mu:
-                            # Harf hatası var, yeni kişi oluşturma, aktif kişiye bağla
-                            blok_kisi = aktif_kisi
-                            blok_tc = aktif_tc
-                        else:
-                            aktif_kisi = blok_kisi
-                            aktif_tc = blok_tc
-                    else:
-                        aktif_kisi = blok_kisi
-                        aktif_tc = blok_tc
-
-                klasor_adi = f"{blok_kisi}_{blok_tc}"
-                hedef_klasor = os.path.join(ayrilmis_klasor_yolu, klasor_adi)
-                if not os.path.exists(hedef_klasor):
-                    os.makedirs(hedef_klasor)
-
-                # AŞAMA 3: Kör İsimlendirme ve Taşıma (Yapay zeka olmadan, saf matematik)
-                for idx, sayfa_yolu in enumerate(blok_sayfalari):
-                    islenen_sayfa += 1
-                    status_text.text(f"Blok {blok_no+1} dosyalanıyor... Toplam Sayfa: {islenen_sayfa}/{toplam_sayfa}")
-                    
-                    if idx < sinav_sayfa:
-                        dosya_adi = f"Sinav_{idx + 1}.tiff"
-                    elif idx < (sinav_sayfa + talimat_sayfa):
-                        dosya_adi = f"Talimat_{idx - sinav_sayfa + 1}.tiff"
-                    else:
-                        dosya_adi = f"Ekstra_Belge_{idx + 1}.tiff"
-
-                    hedef_yol = os.path.join(hedef_klasor, dosya_adi)
-                    
-                    # Eğer aynı klasörde dosya varsa üzerine yazmayı engelle (Kopyasını oluştur)
-                    sayac = 1
-                    orijinal_isim = dosya_adi.replace(".tiff", "")
-                    while os.path.exists(hedef_yol):
-                        dosya_adi = f"{orijinal_isim}_{sayac}.tiff"
-                        hedef_yol = os.path.join(hedef_klasor, dosya_adi)
-                        sayac += 1
-                        
-                    shutil.move(sayfa_yolu, hedef_yol)
-                    basarili_sayisi += 1
-                    progress_bar.progress(islenen_sayfa / toplam_sayfa)
-
-            status_text.text("Klasörler ZIP formatında sıkıştırılıyor...")
-            create_zip(ayrilmis_klasor_yolu, zip_yolu)
-            
-            status_text.text("İşlem tamamlandı!")
-            st.success(f"{basarili_sayisi} sayfa isme ve TC'ye göre arşivlendi.")
-            
-            with open(zip_yolu, "rb") as f:
-                st.download_button(
-                    label="📦 Hazırlanan Klasörleri İndir (ZIP)",
-                    data=f,
-                    file_name="ISG_Ayrilmis_Dosyalar.zip",
-                    mime="application/zip",
-                    type="primary"
-                )
+                            response_text = response.text.replace("```json", "").replace("
