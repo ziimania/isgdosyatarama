@@ -156,7 +156,7 @@ Lütfen form üzerindeki el yazısı ile yazılmış bilgileri bul:
 Yanıtını sadece aşağıdaki formatta, düz bir JSON olarak ver. Başka hiçbir açıklama ekleme:
 {"isim": "Ad Soyad", "tc": "12345678901"}"""
                     
-                    max_deneme = 3
+                  max_deneme = 3
                     sayfa_isim = "Bilinmeyen_Kisi"
                     sayfa_tc = "BilinmeyenTC"
                     
@@ -164,3 +164,14 @@ Yanıtını sadece aşağıdaki formatta, düz bir JSON olarak ver. Başka hiçb
                         try:
                             response = model.generate_content([prompt, islem_gorseli])
                             response_text = response.text.replace("```json", "").replace("```", "").strip()
+                            veri = json.loads(response_text)
+                            
+                            sayfa_isim = dosya_adi_duzenle(veri.get("isim", "Bilinmeyen_Kisi"))
+                            sayfa_tc = dosya_adi_duzenle(str(veri.get("tc", "BilinmeyenTC")))
+                            break
+                        except Exception as e:
+                            if "429" in str(e) or "quota" in str(e).lower():
+                                status_text.text(f"API sınırı, 10 sn bekleniyor... ({deneme+1}/{max_deneme})")
+                                time.sleep(10)
+                            else:
+                                break
