@@ -36,7 +36,8 @@ if "islem_mesaji" not in st.session_state:
 
 st.title("📄 İSG Belge Ayrıştırıcı (Turbo & 300 DPI Kalite)")
 
-api_key = st.text_input("Gemini API Anahtarınızı Girin:", type="password")
+# YENİ: Tarayıcının şifreyi hatırlaması için autocomplete eklendi
+api_key = st.text_input("Gemini API Anahtarınızı Girin:", type="password", autocomplete="current-password")
 
 st.markdown("### ⚙️ Belge Dizilimi (Blok Ayarları)")
 col1, col2 = st.columns(2)
@@ -111,7 +112,6 @@ if st.button("Ayrıştırmayı Başlat", type="primary"):
 
             st.info("PDF dosyası okunuyor, klasörleme için Yüksek Kalitede (300 DPI) diske kaydediliyor...")
             try:
-                # Orijinal dosyaları klasörlemek için 300 DPI TIFF olarak kaydediyoruz
                 sayfa_yollari = convert_from_path(
                     pdf_path, 
                     dpi=300, 
@@ -138,7 +138,6 @@ if st.button("Ayrıştırmayı Başlat", type="primary"):
                 blok_kisi = "Bilinmeyen_Kisi"
                 blok_tc = "BilinmeyenTC"
                 
-                # Uçtan Uca Arama (Önce İlk Sayfa, Sonra Son Sayfa, Sonra Ortalar)
                 if len(blok_sayfalari) > 1:
                     arama_sirasi = [0, len(blok_sayfalari) - 1] + list(range(1, len(blok_sayfalari) - 1))
                 else:
@@ -150,8 +149,8 @@ if st.button("Ayrıştırmayı Başlat", type="primary"):
                     
                     with Image.open(sayfa_yolu) as img:
                         islem_gorseli = img.convert('RGB')
-                        # YAPIY ZEKAYA GİDECEK GEÇİCİ RESMİ KÜÇÜLTÜYORUZ (Orijinal dosya 300 DPI kalır)
-                        islem_gorseli.thumbnail((1500, 1500)) 
+                        # YENİ: Yapay zekaya giden resmi daha da küçülttük (1200 piksel). Kotayı yormaz, aktarımı hızlandırır.
+                        islem_gorseli.thumbnail((1200, 1200)) 
                     
                     prompt = """Bu görsel bir İş Sağlığı ve Güvenliği belgesidir.
 Lütfen form üzerindeki el yazısı ile yazılmış bilgileri bul:
@@ -175,10 +174,13 @@ Yanıtını sadece aşağıdaki formatta, düz bir JSON olarak ver. Başka hiçb
                             sayfa_tc = dosya_adi_duzenle(str(veri.get("tc", "BilinmeyenTC")))
                             break
                         except Exception as e:
-                            if "429" in str(e) or "quota" in str(e).lower():
-                                status_text.text(f"API sınırı, 10 sn bekleniyor... ({deneme+1}/{max_deneme})")
-                                time.sleep(10)
+                            # YENİ: Şeffaf Hata Gösterimi ve 30 Saniye Dinlenme
+                            hata_mesaji = str(e).lower()
+                            if "429" in hata_mesaji or "quota" in hata_mesaji or "resource exhausted" in hata_mesaji:
+                                status_text.text(f"API kotası doldu, sistemin sıfırlanması için 30 sn bekleniyor... ({deneme+1}/{max_deneme})")
+                                time.sleep(30)
                             else:
+                                st.error(f"Sayfa işlenirken beklenmeyen hata oluştu: {str(e)}")
                                 break
                                 
                     islem_gorseli.close()
@@ -188,7 +190,7 @@ Yanıtını sadece aşağıdaki formatta, düz bir JSON olarak ver. Başka hiçb
                         blok_kisi = sayfa_isim
                         if sayfa_tc != "BilinmeyenTC" and sayfa_tc != "":
                             blok_tc = sayfa_tc
-                        break # Kimlik bulundu, kalan sayfaları okuma! 
+                        break 
                 
                 if blok_kisi != "Bilinmeyen_Kisi":
                     if aktif_kisi != "Bilinmeyen_Kisi":
