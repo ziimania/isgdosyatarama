@@ -4,6 +4,7 @@ import json
 import zipfile
 import tempfile
 import time
+import shutil
 import re
 import google.generativeai as genai
 from pdf2image import convert_from_path
@@ -11,16 +12,19 @@ from PIL import Image
 from difflib import SequenceMatcher
 from io import BytesIO
 
+
 # ----------------------------- Yardımcı Fonksiyonlar -----------------------------
 
 def benzerlik_orani(a, b):
     return SequenceMatcher(None, str(a).lower(), str(b).lower()).ratio()
+
 
 def dosya_adi_duzenle(isim):
     yasakli_karakterler = '<>:"/\\|?*'
     for harf in yasakli_karakterler:
         isim = isim.replace(harf, '')
     return isim.strip().title()
+
 
 def create_zip(source_dir, output_zip):
     with zipfile.ZipFile(output_zip, 'w', zipfile.ZIP_DEFLATED) as zipf:
@@ -30,14 +34,18 @@ def create_zip(source_dir, output_zip):
                 arcname = os.path.relpath(file_path, source_dir)
                 zipf.write(file_path, arcname)
 
+
 def json_ayikla(text):
+    """Modelin döndürdüğü metinden JSON bloğunu güvenle çıkarır."""
     text = text.replace("```json", "").replace("```", "").strip()
     eslesme = re.search(r'\{.*\}', text, re.DOTALL)
     if eslesme:
         text = eslesme.group(0)
     return json.loads(text)
 
+
 def ai1_isim_alani_bul(model, pil_image):
+    """AI-1: Görseldeki 'ADI SOYADI' el yazısı alanının konumunu (bounding box) bulup kırpar."""
     prompt = """Bu bir İş Sağlığı ve Güvenliği sınav/eğitim formudur.
 Formun üst kısmında yer alan "ADI SOYADI:" etiketinin HEMEN YANINDAKİ el yazısı ile yazılmış
 isim ve soyisimin bulunduğu alanın konumunu bul.
@@ -56,6 +64,7 @@ Eğer alanı bulamazsan {"bulundu": false} yaz."""
         y_min, x_min, y_max, x_max = veri["box_2d"]
         w, h = pil_image.size
 
+        # Biraz pay (padding) bırakarak piksel koordinatlarına çevir
         pad_x = (x_max - x_min) * 0.15
         pad_y = (y_max - y_min) * 0.5
 
@@ -69,6 +78,7 @@ Eğer alanı bulamazsan {"bulundu": false} yaz."""
 
         kirpilmis = pil_image.crop((left, top, right, bottom))
 
+        # Kırpılmış küçük alanı netlik için büyüt
         hedef_genislik = 900
         oran = hedef_genislik / kirpilmis.width
         yeni_boyut = (hedef_genislik, max(1, int(kirpilmis.height * oran)))
@@ -78,7 +88,9 @@ Eğer alanı bulamazsan {"bulundu": false} yaz."""
     except Exception:
         return None
 
+
 def ai2_isim_oku(model, kirpilmis_gorsel):
+    """AI-2: Kırpılmış, büyütülmüş görseldeki el yazısı ismi okur."""
     prompt = """Bu görselde el yazısı ile yazılmış bir AD SOYAD bulunuyor.
 Sadece bu ismi oku ve yaz. Başka hiçbir açıklama, etiket veya işaret ekleme.
 Emin değilsen en yakın tahminini yaz. Tamamen okunamıyorsa "Bilinmeyen_Kisi" yaz."""
@@ -90,7 +102,9 @@ Emin değilsen en yakın tahminini yaz. Tamamen okunamıyorsa "Bilinmeyen_Kisi" 
     except Exception:
         return "Bilinmeyen_Kisi"
 
+
 def ai_tc_oku(model, pil_image):
+    """Tam sayfadan T.C. Kimlik No'yu okur (JSON formatında)."""
     prompt = """Bu bir İş Sağlığı ve Güvenliği formudur. "T.C. KİMLİK NO:" yazısının yanındaki
 11 haneli rakamı bul. Yanıtını SADECE şu JSON formatında ver:
 {"tc": "12345678901"}
@@ -103,6 +117,7 @@ Okunmuyorsa {"tc": "BilinmeyenTC"} yaz."""
     except Exception:
         return "BilinmeyenTC"
 
+
 def pil_to_bytes(img):
     buf = BytesIO()
     img.save(buf, format="PNG")
@@ -114,8 +129,8 @@ def pil_to_bytes(img):
 st.set_page_config(page_title="İSG Belge Ayrıştırıcı", page_icon="📄", layout="centered")
 
 for key, default in [
-    ("asama", "yukleme"),
-    ("bloklar", []),
+    ("asama", "yukleme"),        # yukleme -> onay -> tamamlandi
+    ("bloklar", []),             # her blok için sözlük listesi
     ("zip_data", None),
     ("islem_mesaji", ""),
     ("temp_dir", None),
@@ -196,14 +211,11 @@ if st.session_state.asama == "yukleme":
             with open(pdf_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
 
-            st.info("PDF okunuyor, 300 DPI ve LZW sıkıştırma ile kalitesi bozulmadan kaydediliyor...")
+            st.info("PDF okunuyor, 300 DPI kalitesinde kaydediliyor...")
             try:
-                temp_images = convert_from_path(pdf_path, dpi=300)
-                sayfa_yollari = []
-                for idx, img in enumerate(temp_images):
-                    sayfa_yolu = os.path.join(orijinal_klasor, f"page_{idx + 1}.tiff")
-                    img.save(sayfa_yolu, format="TIFF", compression="tiff_lzw")
-                    sayfa_yollari.append(sayfa_yolu)
+                sayfa_yollari = convert_from_path(
+                    pdf_path, dpi=300, output_folder=orijinal_klasor, fmt="tiff", paths_only=True
+                )
             except Exception as e:
                 st.error("PDF parçalanamadı: " + str(e))
                 st.stop()
@@ -224,10 +236,11 @@ if st.session_state.asama == "yukleme":
                     "sayfa_yollari": blok_sayfalari,
                     "onerilen_isim": "Bilinmeyen_Kisi",
                     "onerilen_tc": "BilinmeyenTC",
-                    "kirpilar": [],
+                    "kirpilar": [],   # [(sayfa_no, png_bytes, ai_isim), ...]
                     "onaylandi": False,
                 }
 
+                # Sınav sayfalarının HER BİRİNDE (Sınav 1, Sınav 2, ...) isim ara
                 incelenecek_sayfalar = blok_sayfalari[:max(sinav_sayfa, 1)]
 
                 bulunan_isimler = []
@@ -237,9 +250,11 @@ if st.session_state.asama == "yukleme":
                     with Image.open(sayfa_yolu) as img:
                         tam_gorsel = img.convert('RGB').copy()
 
+                    # AI-1: isim alanını bul ve kırp
                     kirpilmis = ai1_isim_alani_bul(model, tam_gorsel)
 
                     if kirpilmis is not None:
+                        # AI-2: kırpılmış alandan ismi oku
                         okunan_isim = ai2_isim_oku(model, kirpilmis)
                         blok_kayit["kirpilar"].append(
                             (s_idx + 1, pil_to_bytes(kirpilmis), okunan_isim)
@@ -250,7 +265,7 @@ if st.session_state.asama == "yukleme":
                     if tc_bulundu == "BilinmeyenTC":
                         tc_bulundu = ai_tc_oku(model, tam_gorsel)
 
-                    time.sleep(2)
+                    time.sleep(2)  # Kota dostu bekleme
 
                 if bulunan_isimler:
                     if len(bulunan_isimler) > 1 and benzerlik_orani(bulunan_isimler[0], bulunan_isimler[1]) < 0.6:
@@ -260,6 +275,7 @@ if st.session_state.asama == "yukleme":
                     blok_kayit["onerilen_isim"] = onerilen
 
                 blok_kayit["onerilen_tc"] = tc_bulundu
+
                 blok_sonuclari.append(blok_kayit)
                 progress_bar.progress((blok_no + 1) / len(bloklar))
 
@@ -269,14 +285,14 @@ if st.session_state.asama == "yukleme":
             st.rerun()
 
 # --------------------------------------------------------------------------
-# AŞAMA 2: Kullanıcı Onayı
+# AŞAMA 2: Kullanıcı Onayı (isim önizleme + düzeltme)
 # --------------------------------------------------------------------------
 elif st.session_state.asama == "onay":
 
     st.markdown("### ✅ Okunan İsimleri Kontrol Edin")
     st.write(
-        "Her blok için AI-1'in kırptığı isim alanı ve AI-2'nin okuduğu isim aşağıda gösteriliyor. "
-        "Yanlışsa düzelttikten sonra kutucuğu işaretleyin."
+        "Her blok için AI-1'in kırptığı isim alanı ve AI-2'nin okuduğu isim aşağıda gösteriliyor "
+        "(varsa Sınav 1 ve Sınav 2 ayrı ayrı). Yanlışsa düzeltip **onaylıyorum** kutucuğunu işaretleyin."
     )
 
     tumu_onayli = True
@@ -290,8 +306,8 @@ elif st.session_state.asama == "onay":
                 kolonlar = st.columns(kol_sayisi)
                 for k, (sayfa_no, img_bytes, ai_isim) in enumerate(blok["kirpilar"]):
                     with kolonlar[k]:
-                        st.image(img_bytes, caption=f"Sınav {sayfa_no} — İsim Alanı")
-                        st.caption(f"AI Okuması: _{ai_isim}_")
+                        st.image(img_bytes, caption=f"Sınav {sayfa_no} — isim alanı")
+                        st.caption(f"AI okuması: _{ai_isim}_")
             else:
                 st.warning("İsim alanı otomatik bulunamadı, lütfen manuel giriniz.")
 
