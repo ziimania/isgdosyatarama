@@ -99,9 +99,9 @@ Lütfen form üzerindeki kutucuklara el yazısı ile yazılmış bilgileri bul:
 Yanıtını sadece aşağıdaki formatta, düz bir JSON olarak ver. Başka hiçbir açıklama ekleme:
 {{"isim": "Ad Soyad", "tc": "12345678901", "tur": "Sinav veya Talimat"}}
 """
-                okunan_isim = "Bilinmeyen_Kisi"
-                okunan_tc = "BilinmeyenTC"
-                belge_turu = "Hata"
+okunan_isim = "Bilinmeyen_Kisi"
+okunan_tc = "BilinmeyenTC"
+belge_turu = "Hata"
                 
                 max_deneme = 3
                 for deneme in range(max_deneme):
