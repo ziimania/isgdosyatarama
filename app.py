@@ -87,15 +87,15 @@ if st.button("Ayrıştırmayı Başlat", type="primary"):
                     islem_gorseli = img.copy()
                     
                 islem_gorseli = islem_gorseli.convert('L')
-                islem_gorseli.thumbnail((1024, 1024))
+                islem_gorseli.thumbnail((2000, 2000))
                 
                 prompt = f"""
                 Bu görsel bir İş Sağlığı ve Güvenliği (İSG) belgesidir. 
                 {f"KULLANICI KILAVUZU: {kullanici_ipucu}" if kullanici_ipucu else ""}
                 
                 Görseldeki metni analiz et ve şu bilgileri çıkar:
-                1. Kişinin Adı ve Soyadı (İsim okunamıyorsa veya yoksa "Bilinmeyen Kisi" yaz).
-                2. 11 Haneli TC Kimlik Numarası (Yoksa veya okunamıyorsa "BilinmeyenTC" yaz).
+                1. Kişinin Adı ve Soyadı (Özellikle tükenmez kalemle yazılmış el yazısına çok dikkat et. Okunamıyorsa "Bilinmeyen Kisi" yaz).
+                2. 11 Haneli TC Kimlik Numarası (El yazısı rakamları dikkatlice oku. Yoksa "BilinmeyenTC" yaz).
                 3. Belge Türü ("Sinav" veya "Talimat" olarak belirle).
                 
                 Yanıtını sadece aşağıdaki formatta, düz bir JSON olarak ver. Başka hiçbir açıklama ekleme:
