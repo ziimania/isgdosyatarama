@@ -34,7 +34,7 @@ if "zip_data" not in st.session_state:
 if "islem_mesaji" not in st.session_state:
     st.session_state.islem_mesaji = ""
 
-st.title("📄 İSG Belge Ayrıştırıcı (Net & Hızlı Blok Mimarisi)")
+st.title("📄 İSG Belge Ayrıştırıcı (Tam Çözünürlük & Net Okuma)")
 
 api_key = st.text_input("Gemini API Anahtarınızı Girin:", type="password", autocomplete="current-password")
 
@@ -137,21 +137,21 @@ if st.button("Ayrıştırmayı Başlat", type="primary"):
                 blok_kisi = "Bilinmeyen_Kisi"
                 blok_tc = "BilinmeyenTC"
                 
-                # SADECE İLK 2 SAYFAYA BAKAR (1. sayfa okunamazsa 2. sayfaya geçer, hız kesmez)
-                aranacak_sayfa_sayisi = min(2, len(blok_sayfalari))
+                # İsim ve TC ilk sayfada (Sınav formunun üst kısmında) olduğu için doğrudan 1. sayfadan başlıyoruz
+                arama_sirasi = [0] if len(blok_sayfalari) == 1 else [0, 1]
                 
-                for idx in range(aranacak_sayfa_sayisi):
+                for idx in arama_sirasi:
                     sayfa_yolu = blok_sayfalari[idx]
                     status_text.text(f"Blok {blok_no+1} / {len(bloklar)} taranıyor (Sayfa {idx+1})...")
                     
                     with Image.open(sayfa_yolu) as img:
                         islem_gorseli = img.convert('RGB')
-                        islem_gorseli.thumbnail((1200, 1200)) 
+                        # ÖNEMLİ: Küçültme (thumbnail) iptal edildi, tam çözünürlükte okunacak!
                     
-                    prompt = """Bu görsel bir İş Sağlığı ve Güvenliği belgesidir.
-Lütfen form üzerindeki el yazısı ile yazılmış bilgileri bul:
-1. "ADI SOYADI:" başlığının yanındaki el yazısı ismi. Okunmuyorsa "Bilinmeyen_Kisi" yaz.
-2. "T.C. KİMLİK NO:" başlığının yanındaki 11 haneli el yazısı rakamı. Okunmuyorsa "BilinmeyenTC" yaz.
+                    prompt = """Bu görsel bir İş Sağlığı ve Güvenliği eğitim veya sınav formudur. 
+Formun üst kısımlarında yer alan el yazısı alanlarını dikkatlice incele:
+1. "ADI SOYADI:" başlığının yanındaki el yazısı ismi bul (Örn: Fevzi Demirok). Okunmuyorsa "Bilinmeyen_Kisi" yaz.
+2. "T.C. KİMLİK NO:" başlığının yanındaki 11 haneli rakamı bul (Örn: 15206343318). Okunmuyorsa "BilinmeyenTC" yaz.
 
 Yanıtını sadece aşağıdaki formatta, düz bir JSON olarak ver. Başka hiçbir açıklama ekleme:
 {"isim": "Ad Soyad", "tc": "12345678901"}"""
@@ -164,17 +164,17 @@ Yanıtını sadece aşağıdaki formatta, düz bir JSON olarak ver. Başka hiçb
                         sayfa_isim = dosya_adi_duzenle(veri.get("isim", "Bilinmeyen_Kisi"))
                         sayfa_tc = dosya_adi_duzenle(str(veri.get("tc", "BilinmeyenTC")))
                         
-                        if sayfa_isim != "Bilinmeyen_Kisi" and sayfa_isim != "":
+                        if sayfa_isim != "Bilinmeyen_Kisi" and sayfa_isim != "" and len(sayfa_isim) > 2:
                             blok_kisi = sayfa_isim
                             if sayfa_tc != "BilinmeyenTC" and sayfa_tc != "":
                                 blok_tc = sayfa_tc
                             islem_gorseli.close()
-                            break # Kimlik bulundu, diğer sayfalara bakma!
+                            break # Kimlik bulundu!
                     except Exception as e:
                         pass
                                 
                     islem_gorseli.close()
-                    time.sleep(4) # KOTAYI DOLTURMAMAK İÇİN İDEAL GÜVENLİ BEKLEME (Dakikada 15 istek sınırı aşılmaz)
+                    time.sleep(3) # Kota dostu bekleme
                 
                 if blok_kisi != "Bilinmeyen_Kisi":
                     if aktif_kisi != "Bilinmeyen_Kisi":
