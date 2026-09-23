@@ -40,21 +40,26 @@ if st.button("Ayrıştırmayı Başlat", type="primary"):
         try:
             genai.configure(api_key=api_key)
             
-            # DİNAMİK MODEL BULUCU (Otomatik Keşif)
             uygun_model = None
             aktif_modeller = []
             
             for m in genai.list_models():
                 if 'generateContent' in m.supported_generation_methods:
                     aktif_modeller.append(m.name)
-                    if 'gemini-1.5-flash' in m.name:
-                        uygun_model = m.name
-                        break
             
-            # Eğer tam isimle bulamazsa, listedeki ilk uygun 1.5 modelini seç
+            oncelikli_modeller = ['gemini-3.8-flash', 'gemini-3.5-flash', 'gemini-2.5-flash']
+            
+            for oncelik in oncelikli_modeller:
+                for ad in aktif_modeller:
+                    if oncelik in ad and 'preview' not in ad and 'lite' not in ad:
+                        uygun_model = ad
+                        break
+                if uygun_model:
+                    break
+            
             if not uygun_model:
                 for ad in aktif_modeller:
-                    if '1.5' in ad or 'vision' in ad:
+                    if 'flash' in ad:
                         uygun_model = ad
                         break
                         
