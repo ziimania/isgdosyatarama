@@ -11,7 +11,6 @@ from PIL import Image
 from difflib import SequenceMatcher
 
 def benzerlik_orani(a, b):
-    # İki metin arasındaki benzerlik yüzdesini ölçer
     return SequenceMatcher(None, str(a).lower(), str(b).lower()).ratio()
 
 def dosya_adi_duzenle(isim):
@@ -30,17 +29,15 @@ def create_zip(source_dir, output_zip):
 
 st.set_page_config(page_title="İSG Belge Ayrıştırıcı", page_icon="📄", layout="centered")
 
-# HAFIZA (SESSION STATE) TANIMLAMALARI - Dosya kaybolmasını engeller
 if "zip_data" not in st.session_state:
     st.session_state.zip_data = None
 if "islem_mesaji" not in st.session_state:
     st.session_state.islem_mesaji = ""
 
-st.title("📄 İSG Belge Ayrıştırıcı (Akıllı Blok Mimarisi)")
+st.title("📄 İSG Belge Ayrıştırıcı (Turbo & 300 DPI Kalite)")
 
 api_key = st.text_input("Gemini API Anahtarınızı Girin:", type="password")
 
-# YENİ KONTROL PANELİ
 st.markdown("### ⚙️ Belge Dizilimi (Blok Ayarları)")
 col1, col2 = st.columns(2)
 with col1:
@@ -60,7 +57,6 @@ if st.button("Ayrıştırmayı Başlat", type="primary"):
     elif blok_boyutu == 0:
         st.error("Toplam sayfa sayısı 0 olamaz. Lütfen Sınav veya Talimat sayfası girin.")
     else:
-        # Eski hafızayı temizle
         st.session_state.zip_data = None
         st.session_state.islem_mesaji = ""
         
@@ -113,9 +109,9 @@ if st.button("Ayrıştırmayı Başlat", type="primary"):
             with open(pdf_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
 
-            st.info("PDF dosyası okunuyor, RAM korunarak yüksek kalitede diske kaydediliyor...")
-            
+            st.info("PDF dosyası okunuyor, klasörleme için Yüksek Kalitede (300 DPI) diske kaydediliyor...")
             try:
+                # Orijinal dosyaları klasörlemek için 300 DPI TIFF olarak kaydediyoruz
                 sayfa_yollari = convert_from_path(
                     pdf_path, 
                     dpi=300, 
@@ -142,11 +138,20 @@ if st.button("Ayrıştırmayı Başlat", type="primary"):
                 blok_kisi = "Bilinmeyen_Kisi"
                 blok_tc = "BilinmeyenTC"
                 
-                for sayfa_yolu in blok_sayfalari:
-                    status_text.text(f"Blok {blok_no+1} / {len(bloklar)} taranıyor (Kimlik Tespiti)...")
+                # Uçtan Uca Arama (Önce İlk Sayfa, Sonra Son Sayfa, Sonra Ortalar)
+                if len(blok_sayfalari) > 1:
+                    arama_sirasi = [0, len(blok_sayfalari) - 1] + list(range(1, len(blok_sayfalari) - 1))
+                else:
+                    arama_sirasi = [0]
+
+                for idx in arama_sirasi:
+                    sayfa_yolu = blok_sayfalari[idx]
+                    status_text.text(f"Blok {blok_no+1} / {len(bloklar)} taranıyor (Akıllı Arama: Sayfa {idx+1})...")
                     
                     with Image.open(sayfa_yolu) as img:
                         islem_gorseli = img.convert('RGB')
+                        # YAPIY ZEKAYA GİDECEK GEÇİCİ RESMİ KÜÇÜLTÜYORUZ (Orijinal dosya 300 DPI kalır)
+                        islem_gorseli.thumbnail((1500, 1500)) 
                     
                     prompt = """Bu görsel bir İş Sağlığı ve Güvenliği belgesidir.
 Lütfen form üzerindeki el yazısı ile yazılmış bilgileri bul:
@@ -177,13 +182,13 @@ Yanıtını sadece aşağıdaki formatta, düz bir JSON olarak ver. Başka hiçb
                                 break
                                 
                     islem_gorseli.close()
-                    time.sleep(3)
+                    time.sleep(2) 
                     
                     if sayfa_isim != "Bilinmeyen_Kisi" and sayfa_isim != "":
                         blok_kisi = sayfa_isim
                         if sayfa_tc != "BilinmeyenTC" and sayfa_tc != "":
                             blok_tc = sayfa_tc
-                        break 
+                        break # Kimlik bulundu, kalan sayfaları okuma! 
                 
                 if blok_kisi != "Bilinmeyen_Kisi":
                     if aktif_kisi != "Bilinmeyen_Kisi":
@@ -232,14 +237,12 @@ Yanıtını sadece aşağıdaki formatta, düz bir JSON olarak ver. Başka hiçb
             status_text.text("Klasörler ZIP formatında sıkıştırılıyor...")
             create_zip(ayrilmis_klasor_yolu, zip_yolu)
             
-            # ZIP DOSYASINI KALICI HAFIZAYA (SESSION STATE) YÜKLE
             with open(zip_yolu, "rb") as f:
                 st.session_state.zip_data = f.read()
-            st.session_state.islem_mesaji = f"{basarili_sayisi} sayfa isme ve TC'ye göre arşivlendi."
+            st.session_state.islem_mesaji = f"{basarili_sayisi} sayfa isme ve TC'ye göre yüksek kalitede (300 DPI) arşivlendi."
             
             status_text.text("İşlem tamamlandı!")
 
-# HAFIZADA DOSYA VARSA İNDİRME BUTONUNU SABİT OLARAK GÖSTER
 if st.session_state.zip_data is not None:
     st.success(st.session_state.islem_mesaji)
     st.download_button(
