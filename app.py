@@ -39,7 +39,32 @@ if st.button("Ayrıştırmayı Başlat", type="primary"):
     else:
         try:
             genai.configure(api_key=api_key)
-            model = genai.GenerativeModel('gemini-1.5-flash-latest')
+            
+            # DİNAMİK MODEL BULUCU (Otomatik Keşif)
+            uygun_model = None
+            aktif_modeller = []
+            
+            for m in genai.list_models():
+                if 'generateContent' in m.supported_generation_methods:
+                    aktif_modeller.append(m.name)
+                    if 'gemini-1.5-flash' in m.name:
+                        uygun_model = m.name
+                        break
+            
+            # Eğer tam isimle bulamazsa, listedeki ilk uygun 1.5 modelini seç
+            if not uygun_model:
+                for ad in aktif_modeller:
+                    if '1.5' in ad or 'vision' in ad:
+                        uygun_model = ad
+                        break
+                        
+            if not uygun_model:
+                st.error(f"Görsel işleyebilen bir model bulunamadı! Hesabınızdaki aktif modeller: {aktif_modeller}")
+                st.stop()
+                
+            model = genai.GenerativeModel(uygun_model)
+            st.toast(f"Başarılı: {uygun_model} modeline bağlanıldı!", icon="✅")
+            
         except Exception as e:
             st.error(f"API Yapılandırma Hatası: {e}")
             st.stop()
@@ -117,7 +142,7 @@ Yanıtını sadece aşağıdaki formatta, düz bir JSON olarak ver. Başka hiçb
                             status_text.text(f"API sınırına ulaşıldı. Sayfa {i+1} için 10 sn bekleniyor... ({deneme+1}/{max_deneme})")
                             time.sleep(10)
                         else:
-                            st.error(f"Sayfa {i+1} işlenirken kritik bir hata oluştu:\n{str(e)}")
+                            st.error(f"Sayfa {i+1} işlenirken hata oluştu: {str(e)}")
                             break
                             
                 if okunan_isim != "Bilinmeyen_Kisi" and okunan_isim != "":
