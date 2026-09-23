@@ -86,18 +86,16 @@ if st.button("Ayrıştırmayı Başlat", type="primary"):
                 with Image.open(sayfa_yolu) as img:
                     islem_gorseli = img.convert('RGB')
                 
-                prompt = f"""
-                Bu görsel bir İş Sağlığı ve Güvenliği (İSG) belgesidir. 
-                {f"KULLANICI KILAVUZU: {kullanici_ipucu}" if kullanici_ipucu else ""}
-                
-                Lütfen form üzerindeki kutucuklara el yazısı ile yazılmış bilgileri bul:
-                1. "ADI SOYADI:" başlığının yanındaki el yazısı ismi (Örn: Naime Kaya). Okunmuyorsa "Bilinmeyen Kisi" yaz.
-                2. "T.C. KİMLİK NO:" başlığının yanındaki 11 haneli el yazısı rakamı. Okunmuyorsa "BilinmeyenTC" yaz.
-                3. Belge Türünü ("Sinav" veya "Talimat") olarak belirle.
-                
-                Yanıtını sadece aşağıdaki formatta, düz bir JSON olarak ver. Başka hiçbir açıklama ekleme:
-                {{"isim": "Ad Soyad", "tc": "12345678901", "tur": "Sinav veya Talimat"}}
-                """
+                prompt = f"""Bu görsel bir İş Sağlığı ve Güvenliği (İSG) belgesidir. 
+{f"KULLANICI KILAVUZU: {kullanici_ipucu}" if kullanici_ipucu else ""}
+
+Lütfen form üzerindeki kutucuklara el yazısı ile yazılmış bilgileri bul:
+1. "ADI SOYADI:" başlığının yanındaki el yazısı ismi (Örn: Naime Kaya). Okunmuyorsa "Bilinmeyen Kisi" yaz.
+2. "T.C. KİMLİK NO:" başlığının yanındaki 11 haneli el yazısı rakamı. Okunmuyorsa "BilinmeyenTC" yaz.
+3. Belge Türünü ("Sinav" veya "Talimat") olarak belirle.
+
+Yanıtını sadece aşağıdaki formatta, düz bir JSON olarak ver. Başka hiçbir açıklama ekleme:
+{{"isim": "Ad Soyad", "tc": "12345678901", "tur": "Sinav veya Talimat"}}"""
                 
                 okunan_isim = "Bilinmeyen_Kisi"
                 okunan_tc = "BilinmeyenTC"
@@ -107,4 +105,66 @@ if st.button("Ayrıştırmayı Başlat", type="primary"):
                 for deneme in range(max_deneme):
                     try:
                         response = model.generate_content([prompt, islem_gorseli])
-                      response_text = response.text.replace("```json", "").replace("```", "").strip()
+                        response_text = response.text.replace("```json", "").replace("```", "").strip()
+                        veri = json.loads(response_text)
+                        
+                        okunan_isim = dosya_adi_duzenle(veri.get("isim", "Bilinmeyen_Kisi"))
+                        okunan_tc = dosya_adi_duzenle(str(veri.get("tc", "BilinmeyenTC")))
+                        belge_turu = veri.get("tur", "Bilinmeyen_Tur").lower()
+                        break
+                    except Exception as e:
+                        if "429" in str(e) or "quota" in str(e).lower():
+                            status_text.text(f"API sınırına ulaşıldı. Sayfa {i+1} için 10 sn bekleniyor... ({deneme+1}/{max_deneme})")
+                            time.sleep(10)
+                        else:
+                            st.error(f"Sayfa {i+1} işlenirken kritik bir hata oluştu:\n{str(e)}")
+                            break
+                            
+                if okunan_isim != "Bilinmeyen_Kisi" and okunan_isim != "":
+                    aktif_kisi = okunan_isim
+                    if okunan_tc != "BilinmeyenTC" and okunan_tc != "":
+                        aktif_tc = okunan_tc
+
+                klasor_adi = f"{aktif_kisi}_{aktif_tc}"
+                
+                hedef_klasor = os.path.join(ayrilmis_klasor_yolu, klasor_adi)
+                if not os.path.exists(hedef_klasor):
+                    os.makedirs(hedef_klasor)
+
+                if klasor_adi not in dosya_sayaclari:
+                    dosya_sayaclari[klasor_adi] = {"sinav": 0, "talimat": 0, "diger": 0}
+                
+                if "sinav" in belge_turu:
+                    dosya_sayaclari[klasor_adi]["sinav"] += 1
+                    yeni_dosya_adi = f"Sinav_{dosya_sayaclari[klasor_adi]['sinav']}.tiff"
+                elif "talimat" in belge_turu:
+                    dosya_sayaclari[klasor_adi]["talimat"] += 1
+                    yeni_dosya_adi = f"Talimat_{dosya_sayaclari[klasor_adi]['talimat']}.tiff"
+                else:
+                    dosya_sayaclari[klasor_adi]["diger"] += 1
+                    yeni_dosya_adi = f"Tanimsiz_Belge_{dosya_sayaclari[klasor_adi]['diger']}.tiff"
+
+                hedef_yol = os.path.join(hedef_klasor, yeni_dosya_adi)
+                
+                islem_gorseli.close()
+                shutil.move(sayfa_yolu, hedef_yol)
+                
+                basarili_sayisi += 1
+                progress_bar.progress((i + 1) / toplam_sayfa)
+                
+                time.sleep(4)
+
+            status_text.text("Klasörler ZIP formatında sıkıştırılıyor...")
+            create_zip(ayrilmis_klasor_yolu, zip_yolu)
+            
+            status_text.text("İşlem tamamlandı!")
+            st.success(f"{basarili_sayisi} sayfa isme ve TC'ye göre arşivlendi.")
+            
+            with open(zip_yolu, "rb") as f:
+                st.download_button(
+                    label="📦 Hazırlanan Klasörleri İndir (ZIP)",
+                    data=f,
+                    file_name="ISG_Ayrilmis_Dosyalar.zip",
+                    mime="application/zip",
+                    type="primary"
+                )
